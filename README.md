@@ -76,7 +76,7 @@ PHP 인터프리터에서 존재하지 않는 클래스를 호출할 때 발생�
 
 3.  `zend_fetch_class`는 `"Class '%s' not found"` 라는 정적인 포맷 문자열과 악성 클래스 이름을 인자로 `zend_throw_or_error` 함수를 호출합니다. 이 함수는 `zend_vspprintf`를 통해 `"Class '%n%n' not found"`와 같은 **1차 결과 문자열(message)을 생성**합니다.
 
-4.  **(버그 발생)** `zend_throw_or_error`는 이어서 3단계에서 생성된 `message` 문자열을 **새로운 포맷 문자열 그 자체**로 사용하여 `zend_throw_error` 함수를 호출합니다.
+4.  **(버그 발생)** `zend_throw_or_error`는 이어서 3단계에서 생성된 `"Class '%n%n' not found"` 문자열을 **새로운 포맷 문자열 그 자체**로 사용하여 `zend_throw_error` 함수를 호출합니다.
 
 5.  최종적으로 `zend_throw_error` 함수 내부의 `zend_vspprintf`(Sink)가 `"Class '%n%n' not found"`를 포맷 문자열로 해석하면서, 공격자가 삽입한 `%n` 같은 지정자를 처리하게 되어 메모리 쓰기 등 임의 코드 실행으로 이어질 수 있습니다.
 
@@ -325,7 +325,7 @@ Source와 Sink에는 여러 개의 후보가 있을 수 있다.
 
 ### CVE-2017-12588
 #### 취약점 설명
-내부 시스템 로그를 외부 로그 서버로 전송하는 rsyslog에서 ZeroMQ 연결 시, 외부에서 설정된 메시지 큐 연결 정보가 그대로 포맷 문자열로 사용되어 발생한 **포맷 스트링 취약점**
+내부 시스템 로그를 외부 로그 서버로 전송하는 rsyslog에서 ZeroMQ 연결 시, 외부 설정 파일에 있던 메시지 큐 연결 정보가 포맷 문자열로 그대로  사용되어 발생한 **포맷 스트링 취약점**
 
 1. rsyslogd가 시작될 때 외부 로그 서버 연결 정보가 저장된 설정 파일을 읽고,
 
@@ -896,7 +896,7 @@ SARD는 보통 단일 행위로 문제가 발생하지만, CVE는 여러 번의 
 ### CVE-2019-12973
 OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU **자원을 고갈시키는 서비스 거부(DoS) 취약점**
 
-1.  사용자가 OpenJPEG의 이미지 변환 유틸리티(`convertbmp.c`)를 사용하여 특수하게 조작된 BMP 이미지 파일을 JPEG2000 형식으로 변환을 시도합니다.
+1.  사용자가 OpenJPEG의 이미지 변환 기능(`convertbmp.c`)을 사용하여 특수하게 조작된 BMP 이미지 파일을 JPEG2000 형식으로 변환을 시도합니다.
 2.  변환기는 BMP 파일의 헤더를 읽어 이미지의 너비(width)와 높이(height) 값을 가져옵니다. 공격자는 이 필드에 비정상적으로 매우 큰 값을 설정해 둡니다.
 3.  변환기는 읽어들인 너비와 높이 값에 대한 유효성을 제대로 검증하지 않은 채, 이 값을 JPEG2000 인코딩 라이브러리 함수(`opj_t1_encode_cblks` 등)에 전달하여 인코딩 파라미터를 설정합니다.
 4.  `opj_t1_encode_cblks` 함수 내의 깊은 중첩 반복문에서, 조작된 너비/높이 값으로부터 계산된 precinct의 너비(`prc->cw`)와 높이(`prc->ch`)가 루프의 종료 조건으로 사용됩니다.
@@ -1605,56 +1605,6 @@ OPJ_BOOL opj_t1_encode_cblks(opj_t1_t *t1,
 ```
 </details>
 
-
-### CVE-2018-20784
-작업 중
-OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU **자원을 고갈시키는 서비스 거부(DoS) 취약점**
-
-1. 
-2. 
-3. 
-4. 
-5. 
-
-이 CVE 취약점을 유발하는 코드(sink:src/lib/openjp2/t1.c:2137)는 아래와 같다.
-
-```c
-샘플 코드
-```
-
-<details>
-<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
-
-```c
-
-```
-</details>
-
-### CVE-2019-17351
-작업 중
-OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU **자원을 고갈시키는 서비스 거부(DoS) 취약점**
-
-1. 
-2. 
-3. 
-4. 
-5. 
-
-이 CVE 취약점을 유발하는 코드(sink:src/lib/openjp2/t1.c:2137)는 아래와 같다.
-
-```c
-샘플 코드
-```
-
-<details>
-<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
-
-```c
-
-```
-</details>
-
-
 ## CWE-78: OS Command Injection
 ### CVE-2017-15108
 가상 머신 게스트 에이전트인 `spice-vdagent`에서, 파일 전송 완료 후 저장 디렉터리를 여는 과정 중 전달받은 경로를 검증하지 않고 쉘 명령으로 만들어 실행하여, 공격자가 임의의 명령을 주입할 수 있는 ****OS Command Injection 취약점****
@@ -1927,7 +1877,7 @@ void DelayedExecutor::delayedExecute(const QString &udi)
 ```c
 /* userDefinedServices는 KDesktopFileActions의 메소드인데 이는 외부 라이브러리에 있는 클래스이고, 파일에서 불러오는 것! 
 
-`random.desktop` 파일 예시
+`random.desktop` 파일 예시 // 새로운 장치(예: USB 드라이브)가 연결되었을 때, 해당 장치에 대해 사용자가 수행할 수 있는 작업 목록
 [Desktop Entry]
 Name=MyPlayer
 Exec=myplayer %U
@@ -2018,17 +1968,18 @@ void DelayedExecutor::delayedExecute(const QString &udi)
 </details>
 
 ### CVE-2018-16863
-Ghostscript의 PostScript 인터프리터에서, 파일 출력 경로에 `%pipe%` 장치를 지정할 때 파일 경로 부분을 쉘 명령으로 사용하여, 조작된 PostScript 문서를 통해 임의의 명령을 실행할 수 있는 **OS Command Injection 취약점**
+Ghostscript의 `-dSAFER` 샌드박스 모드에서, 실패한 `restore` 연산 처리의 결함으로 파일 접근 제어가 무력화된 후, `%pipe%` 장치를 통해 파일 출력 경로를 조작하여 임의의 명령을 실행할 수 있는 OS Command Injection 취약점
 
-1.  공격자가 Ghostscript가 처리할 PostScript 문서 내에서, 출력 파일 경로(`OutputFile`)를 `%pipe%` IODevice를 사용하도록 설정하고, 파이프를 통해 실행할 명령어(예: `id`)를 파일명 부분에 포함시킵니다. (예: `%pipe%id`)
+1.  Ghostscript가 파일 시스템 접근 및 명령어 실행을 차단하는 보안 샌드박스 모드(`-dSAFER`)로 실행됩니다.
 
-2.  출력 장치가 파일을 열기 위해 `gx_device_open_output_file` 함수를 호출하면, 이 함수는 `%pipe%id` 와 같은 출력 경로 문자열을 파싱하기 시작합니다.
+2.  공격자는 먼저 PostScript의 오류 처리 메커니즘을 악용합니다. `restore` 연산을 의도적으로 실패시킨 후 오류를 `stopped`로 잡아내면, `-dSAFER`에 의해 설정된 파일 접근 제한이 해제되는 **논리적 결함(sandbox escape)이 발생**합니다.
 
-3.  `gs_findiodevice` 함수는 문자열 앞부분의 `%pipe%`를 인식하고, 이에 해당하는 `gs_iodev_pipe` 장치 핸들러를 찾아 반환합니다. 이 핸들러는 `pipe_fopen` 함수를 파일 열기 처리기(함수 포인터)로 가지고 있습니다.
+3.  샌드박스가 무력화된 상태에서, 공격자는 출력 파일 경로(`OutputFile`)를 `%pipe%` 장치를 사용하도록 설정하고, 파이프를 통해 실행할 명령어(예: `id`)를 파일명 부분에 포함시킵니다. (예: `%pipe%id`)
 
-4.  **(버그 발생)** `gx_device_open_output_file`은 찾아낸 장치 핸들러의 함수 포인터 `gp_fopen`을 호출합니다. 이 호출은 `pipe_fopen`으로 연결되며, 이때 `%pipe%` 뒷부분의 문자열(`id`)이 검증 없이 `fname` 인자로 그대로 전달됩니다.
+4.  `showpage` 등의 명령으로 출력 작업이 트리거되면, Ghostscript 내부에서는 이 경로를 처리하기 위해 `gs_findiodevice`를 통해 `%pipe%` 핸들러를 찾고, **함수 포인터를 통해 `pipe_fopen` 함수를 호출**하며, 파일명 부분(`id`)을 인자로 전달합니다.
 
-5.  최종적으로 `pipe_fopen` 함수는 전달받은 `fname` 문자열을 `popen()` 함수(Sink)에 인자로 넘겨 실행합니다. 이로 인해 공격자가 파일명으로 지정한 `id` 명령어가 시스템에서 실행됩니다.
+5.  최종적으로 `pipe_fopen` 함수는 전달받은 `id` 문자열을 `popen()` 함수(Sink)에 인자로 넘겨 실행하여, 공격자가 의도한 임의의 명령이 시스템에서 실행됩니다.
+
 이 CVE 취약점을 유발하는 코드(sink:base/gdevpipe.c:60)는 아래와 같다.
 
 ```c
