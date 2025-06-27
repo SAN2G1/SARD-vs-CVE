@@ -291,7 +291,7 @@ SARD 데이터셋은 source와 sink가 같은 함수에 있어 단일 함수 슬
 이로 인해 단일 함수 슬라이싱 만으로는 CVE 취약점을 예측할 수 없다.
 </details>
 
-#### 그 외 불분명한 슬라이싱 범위 문제
+<summary><h4 style="display:inline-block">그 외 불분명한 슬라이싱 범위 문제</h2></summary>
 Source와 Sink에는 여러 개의 후보가 있을 수 있다.
 
 이로 인해 CVE 취약점 탐지를 위해 슬라이싱 할 때 어느 수준의 범위로 슬라이싱할지 기준이 모호하다.
@@ -304,6 +304,7 @@ Source와 Sink에는 여러 개의 후보가 있을 수 있다.
 후보 1. source를 포맷으로 사용해 호출되는 `zend_vspprintf()`
 후보 2. 최하단에 있는 `vspprintf()`
 
+</details>
 
 ### CVE-2017-12588
 #### 취약점 설명
@@ -748,12 +749,15 @@ qqueueStart(qqueue_t *pThis) /* this is the ConstructionFinalizer */
 정적 분석기는 이렇게 시간과 실행 흐름(스레드)이 단절된 '저장' 시점과 '사용' 시점을 하나의 연속된 데이터 흐름으로 연결하지 못합니다. 데이터가 큐에 들어갔다가 나오는 복잡한 과정을 추적하지 못해, 결국 Source와 Sink를 잇는 분석 경로(Slice)가 중간에 끊어지므로 취약점을 놓치게 됩니다.
 </details>
 
-#### 그 외 CPG(Code Property Graph)로 표현 불가능한 콜백 함수 호출
+
+<summary><h4 style="display:inline-block">그 외 CPG(Code Property Graph)로 표현 불가능한 콜백 함수 호출</h2></summary>
+
 이건 SARD도 탐지하지 못하는 사례
 
 **SARD Test Case Flow Variants 44 and 65**
 Data passed as an argument from one function to a function in
 the same source file called via a function pointer
+</details>
 
 ## CWE-400: RE(Resource Exhaustion)
 ### CVE-2017-11142
