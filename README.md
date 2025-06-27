@@ -6,7 +6,7 @@ AI가 SARD는 잘 탐지하지만 CVE는 놓치는 이유를 분석하기 위해
 ## CWE-134: FSB(Format String Bug)
 ### CVE-2011-4930
 #### 취약점 설명
-분산 컴퓨팅 도구 HTCondor에서 입력받은 사용자 계정 정보를 sprintf의 포맷 문자열로 그대로 사용하면서 발생한 포맷 스트링 취약점
+분산 컴퓨팅 도구 HTCondor에서 입력받은 사용자 계정 정보를 sprintf의 포맷 문자열로 그대로 사용하면서 발생한 **포맷 스트링 취약점**
 - Source: socket에서 들어오는 유저 네임
 - Sink: source를 포맷으로 사용해 호출되는 `sprintf()`
 
@@ -52,12 +52,15 @@ if (!socket->code(name)) {
 
 </details>
 
-#### SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유
+<details>
+<summary><h4 style="display:inline-block">SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유</h2></summary>
+
 Joern이 취약점 sink인 sprintf를 노드로 인식하지 못해 슬라이스가 생성되지 않아 취약점 예측이 불가능
+</details>
 
 ### CVE-2015-8617
 #### 취약점 설명
-php 인터프리터에서 존재하지 않는 클래스명에 대한 예외 처리 시, 해당 클래스 명을 포맷 문자열로 그대로 사용하면서 발생한 포맷 스트링 취약점
+php 인터프리터에서 존재하지 않는 클래스명에 대한 예외 처리 시, 해당 클래스 명을 포맷 문자열로 그대로 사용하면서 발생한 **포맷 스트링 취약점**
 - Source: 사용자 입력한 클래스명
 - Sink: source를 포맷으로 사용해 호출되는 `zend_vspprintf()`
 
@@ -76,8 +79,6 @@ static void zend_throw_or_error(int fetch_type, zend_class_entry *exception_ce, 
 		zend_throw_error(exception_ce, message);
 }
 ```
-
-
 
 <details>
 <summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
@@ -277,7 +278,8 @@ static void xbuf_format_converter(void *xbuf, zend_bool is_char, const char *fmt
 
 </details>
 
-#### SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유
+<details>
+<summary><h4 style="display:inline-block">SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유</h2></summary>
 
 ##### 불충분한 슬라이싱 범위
 프로그램 슬라이싱은 취약한 코드의 source에서 sink까지의 코드 조각을 추출하는 기술이다.
@@ -287,6 +289,7 @@ SARD 데이터셋은 source와 sink가 같은 함수에 있어 단일 함수 슬
 그러나 CVE는 source와 sink가 서로 다른 함수에 위치해 interprocedural slicing 없이는 취약 흐름을 포착할 수 없다.
 
 이로 인해 단일 함수 슬라이싱 만으로는 CVE 취약점을 예측할 수 없다.
+</details>
 
 #### 그 외 불분명한 슬라이싱 범위 문제
 Source와 Sink에는 여러 개의 후보가 있을 수 있다.
@@ -304,7 +307,7 @@ Source와 Sink에는 여러 개의 후보가 있을 수 있다.
 
 ### CVE-2017-12588
 #### 취약점 설명
-내부 시스템 로그를 외부 로그 서버로 전송하는 rsyslog에서 ZeroMQ 연결 시, 외부에서 설정된 메시지 큐 연결 정보가 그대로 포맷 문자열로 사용되어 발생한 포맷 스트링 취약점
+내부 시스템 로그를 외부 로그 서버로 전송하는 rsyslog에서 ZeroMQ 연결 시, 외부에서 설정된 메시지 큐 연결 정보가 그대로 포맷 문자열로 사용되어 발생한 **포맷 스트링 취약점**
 
 1. rsyslogd가 시작될 때 외부 로그 서버 연결 정보가 저장된 설정 파일을 읽고,
     ```conf
@@ -677,7 +680,8 @@ static rsRetVal initZMQ(instanceData* pData) {
 
 </details>
 
-#### SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유
+<details>
+<summary><h4 style="display:inline-block">SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유</h2></summary>
 
 ##### 설정 파일 파서(Parser) 분석의 한계
 Ksign 슬라이서와 같은 C/C++ 코드 기반 정적 분석 도구는 .l, .y 파일과 연계된 파서의 동작을 해석하지 못하는 한계를 가집니다. 이로 인해, CVE-2017-12588과 같이 외부 설정 파일에서 시작되어 파서의 콜백 함수를 통해 C 코드로 데이터가 유입되는 유형의 취약점은 데이터 흐름의 시작점을 놓치게 되어 탐지하지 못합니다. 이는 SARD 데이터셋처럼 순수 C 코드로만 구성된 환경에서는 드러나지 않는 문제입니다.
@@ -742,6 +746,7 @@ qqueueStart(qqueue_t *pThis) /* this is the ConstructionFinalizer */
 2단계 (사용): 이후 프로그램이 실행 중일 때, 별개의 워커 스레드가 큐에서 이 데이터를 꺼내와 취약한 함수(Sink)에서 사용합니다.
 
 정적 분석기는 이렇게 시간과 실행 흐름(스레드)이 단절된 '저장' 시점과 '사용' 시점을 하나의 연속된 데이터 흐름으로 연결하지 못합니다. 데이터가 큐에 들어갔다가 나오는 복잡한 과정을 추적하지 못해, 결국 Source와 Sink를 잇는 분석 경로(Slice)가 중간에 끊어지므로 취약점을 놓치게 됩니다.
+</details>
 
 #### 그 외 CPG(Code Property Graph)로 표현 불가능한 콜백 함수 호출
 이건 SARD도 탐지하지 못하는 사례
