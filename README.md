@@ -750,7 +750,7 @@ qqueueStart(qqueue_t *pThis) /* this is the ConstructionFinalizer */
 정적 분석기는 이렇게 시간과 실행 흐름(스레드)이 단절된 '저장' 시점과 '사용' 시점을 하나의 연속된 데이터 흐름으로 연결하지 못합니다. 데이터가 큐에 들어갔다가 나오는 복잡한 과정을 추적하지 못해, 결국 Source와 Sink를 잇는 분석 경로(Slice)가 중간에 끊어지므로 취약점을 놓치게 됩니다.
 </details>
 
-
+<details>
 <summary><h4 style="display:inline-block">그 외 CPG(Code Property Graph)로 표현 불가능한 콜백 함수 호출</h4></summary>
 
 이건 SARD도 탐지하지 못하는 사례
