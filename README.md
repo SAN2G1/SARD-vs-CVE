@@ -291,6 +291,7 @@ SARD 데이터셋은 source와 sink가 같은 함수에 있어 단일 함수 슬
 이로 인해 단일 함수 슬라이싱 만으로는 CVE 취약점을 예측할 수 없다.
 </details>
 
+<details>
 <summary><h4 style="display:inline-block">그 외 불분명한 슬라이싱 범위 문제</h4></summary>
 Source와 Sink에는 여러 개의 후보가 있을 수 있다.
 
