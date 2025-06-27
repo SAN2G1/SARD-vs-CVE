@@ -892,6 +892,9 @@ OPJ_BOOL opj_t1_encode_cblks(opj_t1_t *t1,
 
 이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
 
+<details>
+<summary>이상적인 슬라이스 보기</summary>
+
 ```c
 /* src/bin/jp2/opj_compress.c:2016 */
 int main(int argc, char **argv)
@@ -1551,8 +1554,67 @@ OPJ_BOOL opj_t1_encode_cblks(opj_t1_t *t1,
 
                     for (cblkno = 0; cblkno < prc->cw * prc->ch; ++cblkno) {
 ```
+</details>
+
 
 #### CVE-2018-20784
+OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
+
+1.  사용자가 OpenJPEG의 이미지 변환 유틸리티(`convertbmp.c`)를 사용하여 특수하게 조작된 BMP 이미지 파일을 JPEG2000 형식으로 변환을 시도합니다.
+2.  변환기는 BMP 파일의 헤더를 읽어 이미지의 너비(width)와 높이(height) 값을 가져옵니다. 공격자는 이 필드에 비정상적으로 매우 큰 값을 설정해 둡니다.
+3.  변환기는 읽어들인 너비와 높이 값에 대한 유효성을 제대로 검증하지 않은 채, 이 값을 JPEG2000 인코딩 라이브러리 함수(`opj_t1_encode_cblks` 등)에 전달하여 인코딩 파라미터를 설정합니다.
+4.  `opj_t1_encode_cblks` 함수 내의 깊은 중첩 반복문에서, 조작된 너비/높이 값으로부터 계산된 precinct의 너비(`prc->cw`)와 높이(`prc->ch`)가 루프의 종료 조건으로 사용됩니다.
+5.  `prc->cw * prc->ch`의 결과가 수십억에 달하는 매우 큰 값이 되어, `for (cblkno = 0; cblkno < prc->cw * prc->ch; ++cblkno)` 루프가 사실상 무한히 반복됩니다. 이로 인해 CPU 사용량이 100%에 도달하여 시스템이 응답 불능 상태에 빠집니다.
+
+이 CVE 취약점을 유발하는 코드(sink:src/lib/openjp2/t1.c:2137, `for (cblkno = 0; cblkno < prc->cw * prc->ch; ++cblkno)`)는 아래와 같다.
+`prc->cw`와 `prc->ch`는 `uint32_t` 타입이므로, `prc->cw * prc->ch`의 결과도 최대 4,294,967,295까지 커질 수 있어, 이만큼 반복이 발생할 수 있다.
+
+```c
+OPJ_BOOL opj_t1_encode_cblks(opj_t1_t *t1,
+                             opj_tcd_tile_t *tile,
+                             opj_tcp_t *tcp,
+                             const OPJ_FLOAT64 * mct_norms,
+                             OPJ_UINT32 mct_numcomps
+                            )
+{
+    OPJ_UINT32 compno, resno, bandno, precno, cblkno;
+
+    tile->distotile = 0;        /* fixed_quality */
+
+    for (compno = 0; compno < tile->numcomps; ++compno) {
+        opj_tcd_tilecomp_t* tilec = &tile->comps[compno];
+        opj_tccp_t* tccp = &tcp->tccps[compno];
+        OPJ_UINT32 tile_w = (OPJ_UINT32)(tilec->x1 - tilec->x0);
+
+        for (resno = 0; resno < tilec->numresolutions; ++resno) {
+            opj_tcd_resolution_t *res = &tilec->resolutions[resno];
+
+            for (bandno = 0; bandno < res->numbands; ++bandno) {
+                opj_tcd_band_t* OPJ_RESTRICT band = &res->bands[bandno];
+                OPJ_INT32 bandconst;
+
+                /* Skip empty bands */
+                if (opj_tcd_is_band_empty(band)) {
+                    continue;
+                }
+
+                bandconst = 8192 * 8192 / ((OPJ_INT32) floor(band->stepsize * 8192));
+                for (precno = 0; precno < res->pw * res->ph; ++precno) {
+                    opj_tcd_precinct_t *prc = &band->precincts[precno];
+
+                    for (cblkno = 0; cblkno < prc->cw * prc->ch; ++cblkno) {
+```
+
+이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
+
+<details>
+<summary>이상적인 슬라이스 보기</summary>
+
+```c
+
+```
+</details>
+
 #### CVE-2019-17351
 
 ### CWE-78: OS Command Injection
