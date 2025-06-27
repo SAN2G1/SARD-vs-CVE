@@ -6,9 +6,17 @@ AI가 SARD는 잘 탐지하지만 CVE는 놓치는 이유를 분석하기 위해
 ## CWE-134: FSB(Format String Bug)
 ### CVE-2011-4930
 #### 취약점 설명
-분산 컴퓨팅 도구 HTCondor에서 입력받은 사용자 계정 정보를 sprintf의 포맷 문자열로 그대로 사용하면서 발생한 **포맷 스트링 취약점**
-- Source: socket에서 들어오는 유저 네임
-- Sink: source를 포맷으로 사용해 호출되는 `sprintf()`
+HTCondor의 인증 데몬(credd)에서, 소켓을 통해 수신한 'user:name' 형태의 인증 정보 문자열을 처리할 때, 콜론(`:`) 이후의 문자열을 검증 없이 `sprintf`의 포맷 문자열로 직접 사용하여 발생하는 **포맷 스트링 취약점**
+
+1.  공격자가 HTCondor 인증 데몬(`credd`)에 `:` 구분자와 함께 포맷 스트링 지정자(예: `%s%n`)가 포함된 악의적인 인증 정보 문자열(예: `attacker:%s%s%n`)을 소켓을 통해 전송합니다.
+
+2.  `credd` 데몬은 전송받은 악성 문자열을 `name` 버퍼에 저장하고, `strchr`를 통해 `:` 문자가 포함되어 있는지 확인하여 'user:name' 형식의 분리 처리 로직으로 진입합니다.
+
+3.  코드 내에서 `pColon` 포인터는 원본 문자열의 `:` 위치를 가리키게 되고, `pColon + sizeof(char)` 연산을 통해 `:` 바로 다음, 즉 공격자가 제어하는 포맷 스트링 부분(`%s%s%n`)을 가리키게 됩니다.
+
+4.  **(버그 발생)** `sprintf` 함수가 호출될 때, 3단계에서 얻은 포인터, 즉 **사용자 입력의 일부가 검증 없이 포맷 문자열 인자**로 그대로 전달됩니다.
+
+5.  `sprintf` 함수(Sink)는 전달받은 악성 포맷 문자열을 해석하면서 `%s`, `%n` 등의 지정자를 처리하게 되어, 메모리 정보 유출이나 임의 코드 실행으로 이어질 수 있습니다.
 
 이 CVE 취약점을 유발하는 코드(src/condorr_credd/credd.cpp:266)는 아래와 같다.
 
@@ -60,9 +68,17 @@ Joern이 취약점 sink인 sprintf를 노드로 인식하지 못해 슬라이스
 
 ### CVE-2015-8617
 #### 취약점 설명
-php 인터프리터에서 존재하지 않는 클래스명에 대한 예외 처리 시, 해당 클래스 명을 포맷 문자열로 그대로 사용하면서 발생한 **포맷 스트링 취약점**
-- Source: 사용자 입력한 클래스명
-- Sink: source를 포맷으로 사용해 호출되는 `zend_vspprintf()`
+PHP 인터프리터에서 존재하지 않는 클래스를 호출할 때 발생하는 오류 메시지를 생성하는 과정에서, 외부에서 제어 가능한 클래스 이름을 검증 없이 포맷 문자열로 사용하여 발생하는 **포맷 스트링 취약점**
+
+1.  공격자가 존재하지 않는 클래스를 호출하는 PHP 코드를 실행시키고, 해당 클래스의 이름으로 `%n` 등 포맷 스트링 지정자를 포함한 악의적인 문자열을 사용합니다. (예: `$name="%n%n"; $name::X();`)
+
+2.  PHP 엔진은 해당 클래스를 찾지 못하고, `zend_fetch_class` 함수 내에서 클래스가 존재하지 않을 때의 오류 처리 로직으로 진입합니다.
+
+3.  `zend_fetch_class`는 `"Class '%s' not found"` 라는 정적인 포맷 문자열과 악성 클래스 이름을 인자로 `zend_throw_or_error` 함수를 호출합니다. 이 함수는 `zend_vspprintf`를 통해 `"Class '%n%n' not found"`와 같은 **1차 결과 문자열(message)을 생성**합니다.
+
+4.  **(버그 발생)** `zend_throw_or_error`는 이어서 3단계에서 생성된 `message` 문자열을 **새로운 포맷 문자열 그 자체**로 사용하여 `zend_throw_error` 함수를 호출합니다.
+
+5.  최종적으로 `zend_throw_error` 함수 내부의 `zend_vspprintf`(Sink)가 `"Class '%n%n' not found"`를 포맷 문자열로 해석하면서, 공격자가 삽입한 `%n` 같은 지정자를 처리하게 되어 메모리 쓰기 등 임의 코드 실행으로 이어질 수 있습니다.
 
 [PoC 예시](https://bugs.php.net/bug.php?id=71105): `<?php $name="%n%n%n"; $name::doSomething(); ?>`
 
@@ -769,7 +785,7 @@ the same source file called via a function pointer
 
 ## CWE-400: RE(Resource Exhaustion)
 ### CVE-2017-11142
-PHP가 POST 요청을 처리하는 add_post_vars 함수에서, 처리된 데이터의 위치가 올바르게 갱신되지 않아, memchr 함수가 이미 스캔한 데이터를 포함한 전체 버퍼를 반복적으로 재검색하여 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
+PHP가 POST 요청을 처리하는 add_post_vars 함수에서, 처리된 데이터의 위치가 올바르게 갱신되지 않아, memchr 함수가 이미 스캔한 데이터를 포함한 전체 버퍼를 반복적으로 재검색하여 CPU **자원을 고갈시키는 서비스 거부(DoS) 취약점**
 
 1. PHP 엔진이 HTTP POST 요청을 받아 php_std_post_handler 함수를 호출합니다. 이 함수는 while 루프를 돌며 POST 데이터를 청크(chunk) 단위로 읽어 post_data 버퍼에 추가합니다.
 2. php_std_post_handler는 루프를 돌 때마다 add_post_vars 함수를 호출하여 버퍼에 쌓인 데이터의 변수 파싱을 시도합니다.
@@ -878,7 +894,7 @@ SARD는 보통 단일 행위로 문제가 발생하지만, CVE는 여러 번의 
 </details>
 
 ### CVE-2019-12973
-OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
+OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU **자원을 고갈시키는 서비스 거부(DoS) 취약점**
 
 1.  사용자가 OpenJPEG의 이미지 변환 유틸리티(`convertbmp.c`)를 사용하여 특수하게 조작된 BMP 이미지 파일을 JPEG2000 형식으로 변환을 시도합니다.
 2.  변환기는 BMP 파일의 헤더를 읽어 이미지의 너비(width)와 높이(height) 값을 가져옵니다. 공격자는 이 필드에 비정상적으로 매우 큰 값을 설정해 둡니다.
@@ -1592,7 +1608,7 @@ OPJ_BOOL opj_t1_encode_cblks(opj_t1_t *t1,
 
 ### CVE-2018-20784
 작업 중
-OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
+OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU **자원을 고갈시키는 서비스 거부(DoS) 취약점**
 
 1. 
 2. 
@@ -1616,7 +1632,7 @@ OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)
 
 ### CVE-2019-17351
 작업 중
-OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
+OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU **자원을 고갈시키는 서비스 거부(DoS) 취약점**
 
 1. 
 2. 
@@ -1641,7 +1657,7 @@ OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)
 
 ## CWE-78: OS Command Injection
 ### CVE-2017-15108
-가상 머신 게스트 에이전트인 `spice-vdagent`에서, 파일 전송 완료 후 저장 디렉터리를 여는 과정 중 전달받은 경로를 검증하지 않고 쉘 명령으로 만들어 실행하여, 공격자가 임의의 명령을 주입할 수 있는 OS Command Injection 취약점
+가상 머신 게스트 에이전트인 `spice-vdagent`에서, 파일 전송 완료 후 저장 디렉터리를 여는 과정 중 전달받은 경로를 검증하지 않고 쉘 명령으로 만들어 실행하여, 공격자가 임의의 명령을 주입할 수 있는 ****OS Command Injection 취약점****
 
 1.  SPICE 프로토콜을 통해 `spice-vdagent`가 파일 전송 데이터 메시지(`VDAGENTD_FILE_XFER_DATA`)를 수신하고, 이를 처리하기 위해 `daemon_read_complete` 콜백 함수가 호출됩니다.
 
@@ -1766,7 +1782,7 @@ void vdagent_file_xfers_data(struct vdagent_file_xfers *xfers,
 </details>
 
 ### CVE-2017-15924
-Shadowsocks-libev의 `ss-manager`에서, UDP를 통해 수신한 서버 추가 요청을 부적절하게 처리하여, 공격자가 쉘 메타문자를 주입해 임의의 명령을 실행할 수 있는 OS Command Injection 취약점
+Shadowsocks-libev의 `ss-manager`에서, UDP를 통해 수신한 서버 추가 요청을 부적절하게 처리하여, 공격자가 쉘 메타문자를 주입해 임의의 명령을 실행할 수 있는 **OS Command Injection 취약점**
 
 1.  `ss-manager` 프로세스는 관리 명령을 수신하기 위해 UDP 소켓을 열고, 데이터 수신 시 `manager_recv_cb` 콜백 함수를 호출하도록 설정합니다.
 
@@ -1879,7 +1895,7 @@ static int add_server(struct manager_ctx *manager, struct server *server)
 </details>
 
 ### CVE-2018-6791
-KDE Plasma Workspace의 장치 관리 기능에서, `.desktop` 파일에 정의된 실행 명령의 매크로를 확장할 때 USB 드라이브의 볼륨 레이블과 같은 외부 값을 검증하지 않아, 조작된 장치를 연결 시 임의의 명령이 실행되는 OS Command Injection 취약점
+KDE Plasma Workspace의 장치 관리 기능에서, `.desktop` 파일에 정의된 실행 명령의 매크로를 확장할 때 USB 드라이브의 볼륨 레이블과 같은 외부 값을 검증하지 않아, 조작된 장치를 연결 시 임의의 명령이 실행되는 **OS Command Injection 취약점**
 
 1.  공격자가 악의적인 쉘 메타문자가 포함된 볼륨 레이블(예: `MyUSB';id;'`)을 가진 USB 드라이브와, 해당 장치에 대한 특정 작업(Action)이 정의된 `.desktop` 파일을 준비합니다.
 
@@ -2002,7 +2018,7 @@ void DelayedExecutor::delayedExecute(const QString &udi)
 </details>
 
 ### CVE-2018-16863
-Ghostscript의 PostScript 인터프리터에서, 파일 출력 경로에 `%pipe%` 장치를 지정할 때 파일 경로 부분을 쉘 명령으로 사용하여, 조작된 PostScript 문서를 통해 임의의 명령을 실행할 수 있는 OS Command Injection 취약점
+Ghostscript의 PostScript 인터프리터에서, 파일 출력 경로에 `%pipe%` 장치를 지정할 때 파일 경로 부분을 쉘 명령으로 사용하여, 조작된 PostScript 문서를 통해 임의의 명령을 실행할 수 있는 **OS Command Injection 취약점**
 
 1.  공격자가 Ghostscript가 처리할 PostScript 문서 내에서, 출력 파일 경로(`OutputFile`)를 `%pipe%` IODevice를 사용하도록 설정하고, 파이프를 통해 실행할 명령어(예: `id`)를 파일명 부분에 포함시킵니다. (예: `%pipe%id`)
 
@@ -2257,7 +2273,7 @@ pipe_fopen(gx_io_device * iodev, const char *fname, const char *access,
 </details>
 
 ### CVE-2019-13638~
-GNU `patch` 유틸리티에서, ed 스크립트 형식의 패치를 처리할 때 출력 파일명(`-o` 옵션)을 검증 없이 쉘 명령의 일부로 사용하여, 조작된 파일명을 통해 임의의 명령을 실행할 수 있는 OS Command Injection 취약점
+GNU `patch` 유틸리티에서, ed 스크립트 형식의 패치를 처리할 때 출력 파일명(`-o` 옵션)을 검증 없이 쉘 명령의 일부로 사용하여, 조작된 파일명을 통해 임의의 명령을 실행할 수 있는 **OS Command Injection 취약점**
 
 1.  공격자가 `patch` 유틸리티를 실행할 때, `-o` (또는 `--output`) 옵션을 사용하여 쉘 메타문자가 포함된 악의적인 출력 파일명(예: `';id;'`)을 인자로 전달합니다.
 
@@ -2961,7 +2977,7 @@ do_ed_script (char const *inname, char const *outname,
 </details>
 
 ### CVE-2019-16718~
-radare2의 명령어 처리기에서, 악의적으로 조작된 심볼 이름을 포함한 바이너리 파일 분석 시, 심볼 정보를 출력하는 특정 명령어(`is*`)의 결과를 다시 명령으로 해석하는 과정에서 백틱(\`)으로 감싸인 심볼 이름이 쉘 명령으로 실행되는 OS Command Injection 취약점
+radare2의 명령어 처리기에서, 악의적으로 조작된 심볼 이름을 포함한 바이너리 파일 분석 시, 심볼 정보를 출력하는 특정 명령어(`is*`)의 결과를 다시 명령으로 해석하는 과정에서 백틱(\`)으로 감싸인 심볼 이름이 쉘 명령으로 실행되는 **OS Command Injection 취약점**
 
 1.  공격자가 심볼 이름에 쉘 메타문자(예: `` `!id` ``)가 포함된 악성 바이너리 파일을 준비하고, 사용자가 radare2에서 이 파일을 연 뒤 심볼 정보를 출력하는 명령어(예: `.is*`)를 실행합니다.
 
