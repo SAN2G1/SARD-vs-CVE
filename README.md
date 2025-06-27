@@ -1,14 +1,11 @@
 # SARD-vs-CVE
 AI가 SARD는 잘 탐지하지만 CVE는 놓치는 이유를 분석하기 위해 두 데이터를 비교합니다.
 
-## 개요
+## 개요                                                
 
-...                                                      |
-
-## 세부 사항
-### CWE-134: FSB(Format String Bug)
-#### CVE-2011-4930
-##### 취약점 설명
+## CWE-134: FSB(Format String Bug)
+### CVE-2011-4930
+#### 취약점 설명
 분산 컴퓨팅 도구 HTCondor에서 입력받은 사용자 계정 정보를 sprintf의 포맷 문자열로 그대로 사용하면서 발생한 포맷 스트링 취약점
 - Source: socket에서 들어오는 유저 네임
 - Sink: source를 포맷으로 사용해 호출되는 `sprintf()`
@@ -57,11 +54,11 @@ if (!socket->code(name)) {
 
 </details>
 
-##### SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유
+#### SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유
 Joern이 취약점 sink인 sprintf를 노드로 인식하지 못해 슬라이스가 생성되지 않아 취약점 예측이 불가능
 
-#### CVE-2015-8617
-##### 취약점 설명
+### CVE-2015-8617
+#### 취약점 설명
 php 인터프리터에서 존재하지 않는 클래스명에 대한 예외 처리 시, 해당 클래스 명을 포맷 문자열로 그대로 사용하면서 발생한 포맷 스트링 취약점
 - Source: 사용자 입력한 클래스명
 - Sink: source를 포맷으로 사용해 호출되는 `zend_vspprintf()`
@@ -282,9 +279,9 @@ static void xbuf_format_converter(void *xbuf, zend_bool is_char, const char *fmt
 
 </details>
 
-##### SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유
+#### SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유
 
-###### 불충분한 슬라이싱 범위
+##### 불충분한 슬라이싱 범위
 프로그램 슬라이싱은 취약한 코드의 source에서 sink까지의 코드 조각을 추출하는 기술이다.
 
 SARD 데이터셋은 source와 sink가 같은 함수에 있어 단일 함수 슬라이싱으로 취약점이 탐지 가능하다.
@@ -293,7 +290,7 @@ SARD 데이터셋은 source와 sink가 같은 함수에 있어 단일 함수 슬
 
 이로 인해 단일 함수 슬라이싱 만으로는 CVE 취약점을 예측할 수 없다.
 
-##### 그 외 불분명한 슬라이싱 범위 문제
+#### 그 외 불분명한 슬라이싱 범위 문제
 Source와 Sink에는 여러 개의 후보가 있을 수 있다.
 
 이로 인해 CVE 취약점 탐지를 위해 슬라이싱 할 때 어느 수준의 범위로 슬라이싱할지 기준이 모호하다.
@@ -307,8 +304,8 @@ Source와 Sink에는 여러 개의 후보가 있을 수 있다.
 후보 2. 최하단에 있는 `vspprintf()`
 
 
-#### CVE-2017-12588
-##### 취약점 설명
+### CVE-2017-12588
+#### 취약점 설명
 내부 시스템 로그를 외부 로그 서버로 전송하는 rsyslog에서 ZeroMQ 연결 시, 외부에서 설정된 메시지 큐 연결 정보가 그대로 포맷 문자열로 사용되어 발생한 포맷 스트링 취약점
 
 1. rsyslogd가 시작될 때 외부 로그 서버 연결 정보가 저장된 설정 파일을 읽고,
@@ -684,13 +681,13 @@ static rsRetVal initZMQ(instanceData* pData) {
 
 </details>
 
-##### SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유
+#### SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유
 
-###### 설정 파일 파서(Parser) 분석의 한계
+##### 설정 파일 파서(Parser) 분석의 한계
 Ksign 슬라이서와 같은 C/C++ 코드 기반 정적 분석 도구는 .l, .y 파일과 연계된 파서의 동작을 해석하지 못하는 한계를 가집니다. 이로 인해, CVE-2017-12588과 같이 외부 설정 파일에서 시작되어 파서의 콜백 함수를 통해 C 코드로 데이터가 유입되는 유형의 취약점은 데이터 흐름의 시작점을 놓치게 되어 탐지하지 못합니다. 이는 SARD 데이터셋처럼 순수 C 코드로만 구성된 환경에서는 드러나지 않는 문제입니다.
 
 
-###### 복잡한 매크로!
+##### 복잡한 매크로!
 CVE 코드에서는 DEFpropSetMethFP와 같은 매크로가 함수를 동적으로 생성합니다. wtpSetpfDoWork라는 핵심 함수는 개발자가 직접 작성한 것이 아니라, 매크로와 ## 연산자에 의해 **전처리(Pre-processing) 과정에서 만들어지는 '가상의 함수'**입니다.
 
 정적 분석기는 소스 코드에서 wtpSetpfDoWork 함수의 정의를 찾지 못해 호출 관계(Call Graph)를 구성하는 데 실패합니다. 호출 관계가 끊어지면, 이 함수 내부에서 일어나는 핵심 데이터 흐름(콜백 함수 주소 할당) 또한 추적할 수 없게 됩니다. 결과적으로, 소스(Source)와 싱크(Sink)를 잇는 슬라이스가 중간에 완전히 끊어져 취약점을 탐지할 수 없습니다.
@@ -740,7 +737,7 @@ qqueueStart(qqueue_t *pThis) /* this is the ConstructionFinalizer */
 	CHKiRet(wtpSetpfDoWork		(pThis->pWtpReg, (rsRetVal (*)(void *pUsr, void *pWti)) ConsumerReg));
 ```
 
-###### 실행 단계가 분리되어 있어 취약점을 하나의 슬라이스로 표현 불가능
+##### 실행 단계가 분리되어 있어 취약점을 하나의 슬라이스로 표현 불가능
 실행 단계 분리로 인한 탐지 실패 요약
 정적 분석기가 이 취약점을 탐지하지 못하는 이유는, 데이터가 오염되는 시점과 사용되는 시점이 완전히 분리되어 있기 때문입니다.
 
@@ -750,15 +747,15 @@ qqueueStart(qqueue_t *pThis) /* this is the ConstructionFinalizer */
 
 정적 분석기는 이렇게 시간과 실행 흐름(스레드)이 단절된 '저장' 시점과 '사용' 시점을 하나의 연속된 데이터 흐름으로 연결하지 못합니다. 데이터가 큐에 들어갔다가 나오는 복잡한 과정을 추적하지 못해, 결국 Source와 Sink를 잇는 분석 경로(Slice)가 중간에 끊어지므로 취약점을 놓치게 됩니다.
 
-##### 그 외 CPG(Code Property Graph)로 표현 불가능한 콜백 함수 호출
+#### 그 외 CPG(Code Property Graph)로 표현 불가능한 콜백 함수 호출
 이건 SARD도 탐지하지 못하는 사례
 
 **SARD Test Case Flow Variants 44 and 65**
 Data passed as an argument from one function to a function in
 the same source file called via a function pointer
 
-### CWE-400: RE(Resource Exhaustion)
-#### CVE-2017-11142
+## CWE-400: RE(Resource Exhaustion)
+### CVE-2017-11142
 PHP가 POST 요청을 처리하는 add_post_vars 함수에서, 처리된 데이터의 위치가 올바르게 갱신되지 않아, memchr 함수가 이미 스캔한 데이터를 포함한 전체 버퍼를 반복적으로 재검색하여 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
 
 1. PHP 엔진이 HTTP POST 요청을 받아 php_std_post_handler 함수를 호출합니다. 이 함수는 while 루프를 돌며 POST 데이터를 청크(chunk) 단위로 읽어 post_data 버퍼에 추가합니다.
@@ -856,16 +853,16 @@ static zend_bool add_post_var(zval *arr, post_var_data_t *var, zend_bool eof TSR
 
 </details>
 
-##### 템플릿: 비정형적 Sink
+#### 템플릿: 비정형적 Sink
 SARD의 strcpy 같은 명백한 위험 함수와 달리, CVE의 Sink는 평소에 안전한 memchr 함수입니다. 분석기는 단순히 함수 호출을 넘어, '반복문 내에서 비정상적으로 사용되는 패턴' 자체를 이해해야만 자원 고갈(DoS) 취약점으로 인지할 수 있습니다.
 
-##### 템플릿: 상태 기반 버그
+#### 템플릿: 상태 기반 버그
 SARD는 보통 단일 행위로 문제가 발생하지만, CVE는 여러 번의 루프를 거치며 데이터 구조체의 상태가 계속 변하고 누적되어야 버그가 발생합니다. 분석기는 이처럼 시간에 따른 상태 변화를 추적해야 하는 어려움이 있습니다.
 
-##### 템플릿: 복잡한 함수 간 루프 구조
+#### 템플릿: 복잡한 함수 간 루프 구조
 이 CVE는 외부 함수의 루프가 내부 함수의 논리적 버그를 반복적으로 트리거하는 구조입니다. 각 함수를 독립적으로 분석해서는 찾을 수 없고, 여러 함수에 걸친 루프의 상호작용까지 분석해야 하므로 탐지 난이도가 매우 높습니다.
 
-#### CVE-2019-12973
+### CVE-2019-12973
 OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
 
 1.  사용자가 OpenJPEG의 이미지 변환 유틸리티(`convertbmp.c`)를 사용하여 특수하게 조작된 BMP 이미지 파일을 JPEG2000 형식으로 변환을 시도합니다.
@@ -1580,7 +1577,7 @@ OPJ_BOOL opj_t1_encode_cblks(opj_t1_t *t1,
 </details>
 
 
-#### CVE-2018-20784
+### CVE-2018-20784
 작업 중
 OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
 
@@ -1606,7 +1603,7 @@ OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)
 ```
 </details>
 
-#### CVE-2019-17351
+### CVE-2019-17351
 작업 중
 OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
 
@@ -1633,8 +1630,8 @@ OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)
 </details>
 
 
-### CWE-78: OS Command Injection
-#### CVE-2017-15108
+## CWE-78: OS Command Injection
+### CVE-2017-15108
 가상 머신 게스트 에이전트인 `spice-vdagent`에서, 파일 전송 완료 후 저장 디렉터리를 여는 과정 중 전달받은 경로를 검증하지 않고 쉘 명령으로 만들어 실행하여, 공격자가 임의의 명령을 주입할 수 있는 OS Command Injection 취약점
 
 1.  SPICE 프로토콜을 통해 `spice-vdagent`가 파일 전송 데이터 메시지(`VDAGENTD_FILE_XFER_DATA`)를 수신하고, 이를 처리하기 위해 `daemon_read_complete` 콜백 함수가 호출됩니다.
@@ -1761,7 +1758,7 @@ void vdagent_file_xfers_data(struct vdagent_file_xfers *xfers,
 ```
 </details>
 
-#### CVE-2017-15924
+### CVE-2017-15924
 Shadowsocks-libev의 `ss-manager`에서, UDP를 통해 수신한 서버 추가 요청을 부적절하게 처리하여, 공격자가 쉘 메타문자를 주입해 임의의 명령을 실행할 수 있는 OS Command Injection 취약점
 
 1.  `ss-manager` 프로세스는 관리 명령을 수신하기 위해 UDP 소켓을 열고, 데이터 수신 시 `manager_recv_cb` 콜백 함수를 호출하도록 설정합니다.
@@ -1876,7 +1873,7 @@ static int add_server(struct manager_ctx *manager, struct server *server)
 ```
 </details>
 
-#### CVE-2018-6791
+### CVE-2018-6791
 KDE Plasma Workspace의 장치 관리 기능에서, `.desktop` 파일에 정의된 실행 명령의 매크로를 확장할 때 USB 드라이브의 볼륨 레이블과 같은 외부 값을 검증하지 않아, 조작된 장치를 연결 시 임의의 명령이 실행되는 OS Command Injection 취약점
 
 1.  공격자가 악의적인 쉘 메타문자가 포함된 볼륨 레이블(예: `MyUSB';id;'`)을 가진 USB 드라이브와, 해당 장치에 대한 특정 작업(Action)이 정의된 `.desktop` 파일을 준비합니다.
@@ -2001,7 +1998,7 @@ void DelayedExecutor::delayedExecute(const QString &udi)
 ```
 </details>
 
-#### CVE-2018-16863
+### CVE-2018-16863
 Ghostscript의 PostScript 인터프리터에서, 파일 출력 경로에 `%pipe%` 장치를 지정할 때 파일 경로 부분을 쉘 명령으로 사용하여, 조작된 PostScript 문서를 통해 임의의 명령을 실행할 수 있는 OS Command Injection 취약점
 
 1.  공격자가 Ghostscript가 처리할 PostScript 문서 내에서, 출력 파일 경로(`OutputFile`)를 `%pipe%` IODevice를 사용하도록 설정하고, 파이프를 통해 실행할 명령어(예: `id`)를 파일명 부분에 포함시킵니다. (예: `%pipe%id`)
@@ -2258,7 +2255,7 @@ pipe_fopen(gx_io_device * iodev, const char *fname, const char *access,
 ```
 </details>
 
-#### CVE-2019-13638~
+### CVE-2019-13638~
 GNU `patch` 유틸리티에서, ed 스크립트 형식의 패치를 처리할 때 출력 파일명(`-o` 옵션)을 검증 없이 쉘 명령의 일부로 사용하여, 조작된 파일명을 통해 임의의 명령을 실행할 수 있는 OS Command Injection 취약점
 
 1.  공격자가 `patch` 유틸리티를 실행할 때, `-o` (또는 `--output`) 옵션을 사용하여 쉘 메타문자가 포함된 악의적인 출력 파일명(예: `';id;'`)을 인자로 전달합니다.
@@ -2964,7 +2961,7 @@ do_ed_script (char const *inname, char const *outname,
 ```
 </details>
 
-#### CVE-2019-16718~
+### CVE-2019-16718~
 radare2의 명령어 처리기에서, 악의적으로 조작된 심볼 이름을 포함한 바이너리 파일 분석 시, 심볼 정보를 출력하는 특정 명령어(`is*`)의 결과를 다시 명령으로 해석하는 과정에서 백틱(\`)으로 감싸인 심볼 이름이 쉘 명령으로 실행되는 OS Command Injection 취약점
 
 1.  공격자가 심볼 이름에 쉘 메타문자(예: `` `!id` ``)가 포함된 악성 바이너리 파일을 준비하고, 사용자가 radare2에서 이 파일을 연 뒤 심볼 정보를 출력하는 명령어(예: `.is*`)를 실행합니다.
@@ -3004,41 +3001,6 @@ next2:
 <details>
 <summary>이상적인 슬라이스 보기</summary>
 
-```c
-/* libr/core/cmd.c:2086 */
-static int cmd_system(void *data, const char *input) {
-	RCore *core = (RCore*)data;
-	ut64 n;
-	int ret = 0;
-	switch (*input) {
-	default:
-		n = atoi (input);
-		if (*input == '0' || n > 0) {
-		} else {
-			char *cmd = r_core_sysenv_begin (core, input);
-			if (cmd) {
-				void *bed = r_cons_sleep_begin ();
-				ret = r_sys_cmd (cmd);
-
-/* libr/util/sys.c:799 */
-R_API int r_sys_cmd(const char *str) {
-	if (r_sandbox_enable (0)) {
-		return false;
-	}
-	return r_sandbox_system (str, 1);
-
-/* libr/util/sandbox.c:185 */
-R_API int r_sandbox_system (const char *x, int n) {
-	if (enabled) {
-		eprintf ("sandbox: system call disabled\n");
-		return -1;
-	}
-#if LIBC_HAVE_FORK
-#if LIBC_HAVE_SYSTEM
-	if (n) {
-		return system (x);
-```
-이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
 ```c
 /* cbin.c:2043 */
 static int bin_symbols(RCore *r, int mode, ut64 laddr, int va, ut64 at, const char *name, bool exponly, const char *args) {
@@ -3877,13 +3839,7 @@ R_API int r_sandbox_system (const char *x, int n) {
 </details>
 
 
-
-
-### 1. CVE는 source와 sink 사이의 call stack이 길고, SARD는 짧다.
-따라서 slicer가 call stack 전체를 포함하지 못해 SARD는 잘 탐지하지만 CVE는 놓칠 수 있다.
-
-### 2. 
-
+<!--
 ## 개요
 ### CWE-134: FSB(Format String Bug)
 | CVE            | SW               | 분석 | 교수님 확인 | 교훈                                                         |
@@ -3913,3 +3869,4 @@ R_API int r_sandbox_system (const char *x, int n) {
 | CVE-2018-16863 | ghostpdl             | ✅   | ✅          | —                                                            |
 | CVE-2019-13638~| patch                | ✅   | ✅          | caller≠source, 전역 변수 흐름까지 슬라이싱에 포함해야 함     |
 | CVE-2019-16718~| radare2              | ✅   | ✅     | —      
+-->
