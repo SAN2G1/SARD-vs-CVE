@@ -767,7 +767,7 @@ PHP가 POST 요청을 처리하는 add_post_vars 함수에서, 처리된 데이�
 4. add_post_vars 내부에서 호출되는 add_post_var 함수는 변수 구분자인 &를 찾기 위해 memchr를 사용합니다. 버그로 인해 memchr는 이전에 이미 & 문자가 없음을 확인했던 영역까지 포함하여, 점점 커지는 전체 버퍼를 처음부터 끝까지 반복적으로 스캔하게 됩니다.
 5. 공격자는 & 문자 없이 매우 큰 단일 변수(예: a=AAAA...)를 전송하여 이 시나리오를 유발합니다. 버퍼가 계속 커지고(8KB, 16KB, 24KB...) memchr의 스캔 범위가 그에 따라 선형적으로 증가하면서, CPU 사용량이 100%에 도달해 서비스가 마비됩니다. 변수가 하나이므로 max_input_vars 제한은 쉽게 우회됩니다.
 
-이 CVE 취약점을 유발하는 코드(sink:php_variables.c:253, memset)는 아래와 같다.
+이 CVE 취약점을 유발하는 코드(sink:main/php_variables.c:253, memset)는 아래와 같다.
 ```
 static zend_bool add_post_var(zval *arr, post_var_data_t *var, zend_bool eof TSRMLS_DC){
 	if (var->ptr >= var->end) {
@@ -1635,19 +1635,49 @@ OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)
 
 ### CWE-78: OS Command Injection
 #### CVE-2017-15108
-작업 중
-OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
+가상 머신 게스트 에이전트인 `spice-vdagent`에서, 파일 전송 완료 후 저장 디렉터리를 여는 과정 중 전달받은 경로를 검증하지 않고 쉘 명령으로 만들어 실행하여, 공격자가 임의의 명령을 주입할 수 있는 OS Command Injection 취약점
 
-1. 
-2. 
-3. 
-4. 
-5. 
+1.  SPICE 프로토콜을 통해 `spice-vdagent`가 파일 전송 데이터 메시지(`VDAGENTD_FILE_XFER_DATA`)를 수신하고, 이를 처리하기 위해 `daemon_read_complete` 콜백 함수가 호출됩니다.
 
-이 CVE 취약점을 유발하는 코드(sink:src/lib/openjp2/t1.c:2137)는 아래와 같다.
+2.  `daemon_read_complete` 함수는 전달받은 메시지를 `vdagent_file_xfers_data` 함수로 넘겨 파일 쓰기 작업을 수행합니다.
+
+3.  `vdagent_file_xfers_data` 함수 내에서 파일 쓰기가 완료되면, 전송이 모두 끝났는지 확인하는 조건문(`task->read_bytes >= task->file_size`)에 진입합니다.
+
+4.  **(버그 발생)** 모든 파일 전송이 완료된 경우, 저장된 디렉터리를 열어주기 위해 `snprintf`를 사용하여 `xdg-open '%s'&` 형태의 쉘 명령 문자열을 생성합니다. 이 과정에서 경로를 담고 있는 `xfers->save_dir` 변수의 내용을 검증하거나 이스케이프하지 않고 그대로 문자열에 삽입합니다.
+
+5.  공격자에 의해 조작된 `save_dir` 경로가 포함된 명령 문자열이 `system()` 함수(Sink)에 그대로 전달되어 실행됩니다. 이로 인해 공격자는 `'; id; #`와 같은 페이로드를 `save_dir`에 담아 원하는 임의의 명령을 실행할 수 있습니다.
+
+이 CVE 취약점을 유발하는 코드(sink:src/vdagent/file-xfers.c:341)는 아래와 같다.
 
 ```c
-샘플 코드
+void vdagent_file_xfers_data(struct vdagent_file_xfers *xfers,
+    VDAgentFileXferDataMessage *msg)
+{
+    AgentFileXferTask *task;
+    int len, status = -1;
+
+    g_return_if_fail(xfers != NULL);
+
+    task = vdagent_file_xfers_get_task(xfers, msg->id);
+    if (!task)
+        return;
+
+    len = write(task->file_fd, msg->data, msg->size);
+    if (len == msg->size) {
+        task->read_bytes += msg->size;
+        if (task->read_bytes >= task->file_size) {
+            if (task->read_bytes == task->file_size) {
+                if (xfers->debug)
+                    syslog(LOG_DEBUG, "file-xfer: task %u %s has completed",
+                           task->id, task->file_name);
+                close(task->file_fd);
+                task->file_fd = -1;
+                if (xfers->open_save_dir &&
+                        task->file_xfer_nr == task->file_xfer_total &&
+                        g_hash_table_size(xfers->xfers) == 1) {
+                    char buf[PATH_MAX];
+                    snprintf(buf, PATH_MAX, "xdg-open '%s'&", xfers->save_dir);
+                    status = system(buf);
 ```
 
 이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
@@ -1656,24 +1686,105 @@ OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)
 <summary>이상적인 슬라이스 보기</summary>
 
 ```c
+/* src/vdagent/vdagent.c:354 */
+static gboolean vdagent_init_async_cb(gpointer user_data)
+{
+    VDAgent *agent = user_data;
+    GError *err = NULL;
 
+    agent->conn = udscs_connect(
+        vdagentd_socket,
+        daemon_read_complete,
+        daemon_error_cb,
+        debug,
+        &err
+    );
+}
+
+/* src/vdagent/vdagent.c:222 */
+static void daemon_read_complete(UdscsConnection *conn,
+    struct udscs_message_header *header, uint8_t *data)
+{
+    VDAgent *agent = g_object_get_data(G_OBJECT(conn), "agent");
+
+    switch (header->type) {
+        case VDAGENTD_FILE_XFER_DATA:
+            if (agent->xfers != NULL) {
+                vdagent_file_xfers_data(
+                    agent->xfers,
+                    (VDAgentFileXferDataMessage *)data
+                );
+            }
+            break;
+        default:
+            break;
+    }
+}
+/* src/vdagent/file-xfers.c:341 */
+void vdagent_file_xfers_data(struct vdagent_file_xfers *xfers,
+    VDAgentFileXferDataMessage *msg)
+{
+    AgentFileXferTask *task;
+    int len, status = -1;
+
+    task = vdagent_file_xfers_get_task(xfers, msg->id);
+    len = write(task->file_fd, msg->data, msg->size);
+
+    if (len == msg->size) {
+        task->read_bytes += msg->size;
+
+        if (task->read_bytes >= task->file_size) {
+            if (task->read_bytes == task->file_size) {
+                if (xfers->debug) {
+                    syslog(
+                        LOG_DEBUG,
+                        "file-xfer: task %u %s has completed",
+                        task->id,
+                        task->file_name
+                    );
+                }
+
+                close(task->file_fd);
+                task->file_fd = -1;
+
+                if (xfers->open_save_dir &&
+                    task->file_xfer_nr == task->file_xfer_total &&
+                    g_hash_table_size(xfers->xfers) == 1) {
+                    char buf[PATH_MAX];
+                    snprintf(buf, PATH_MAX, "xdg-open '%s'&", xfers->save_dir);
+                    status = system(buf);
+                }
+            }
+        }
+    }
+}
 ```
 </details>
 
 #### CVE-2017-15924
-작업 중
-OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
+Shadowsocks-libev의 `ss-manager`에서, UDP를 통해 수신한 서버 추가 요청을 부적절하게 처리하여, 공격자가 쉘 메타문자를 주입해 임의의 명령을 실행할 수 있는 OS Command Injection 취약점
 
-1. 
-2. 
-3. 
-4. 
-5. 
+1.  `ss-manager` 프로세스는 관리 명령을 수신하기 위해 UDP 소켓을 열고, 데이터 수신 시 `manager_recv_cb` 콜백 함수를 호출하도록 설정합니다.
+
+2.  공격자는 서버를 추가(`"action": "add"`)하는 악의적인 JSON 요청을 UDP 소켓으로 전송합니다. `manager_recv_cb` 함수는 이 요청을 받아 `get_server()`를 통해 JSON을 파싱하고, 검증되지 않은 `method`, `port` 등의 값을 `server` 구조체에 저장합니다.
+
+3.  `manager_recv_cb`는 악성 데이터가 담긴 `server` 구조체를 `add_server` 함수에 전달하고, 이어서 `construct_command_line` 함수가 호출됩니다.
+
+4.  **(버그 발생)** `construct_command_line` 함수는 새로운 `shadowsocks` 서버를 실행하기 위한 쉘 명령 문자열을 `snprintf`로 생성합니다. 이 과정에서 `server->method`, `server->port` 등 외부로부터 받은 값을 **아무런 검증이나 이스케이프 처리 없이** `%s` 포맷 지정자를 통해 그대로 문자열에 삽입합니다.
+
+5.  공격자에 의해 `'; id; #`와 같은 쉘 메타문자가 포함된 `method` 값이 그대로 명령 문자열의 일부가 되고, 이 최종 명령 문자열이 `add_server` 함수 내의 `system()`(Sink)으로 전달되어 실행됩니다. 결과적으로 공격자가 의도한 임의의 명령이 시스템에서 실행됩니다.
 
 이 CVE 취약점을 유발하는 코드(sink:src/lib/openjp2/t1.c:2137)는 아래와 같다.
 
 ```c
-샘플 코드
+static int
+add_server(struct manager_ctx *manager, struct server *server)
+{
+    int ret = check_port(manager, server);
+    ...
+    cork_hash_table_put(server_table, (void *)server->port, (void *)server, &new, NULL, NULL);
+    char *cmd = construct_command_line(manager, server);
+    if (system(cmd) == -1) {
 ```
 
 이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
@@ -1682,24 +1793,114 @@ OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)
 <summary>이상적인 슬라이스 보기</summary>
 
 ```c
+/* src/manager.c:1187 */
+int main(int argc, char **argv)
+{
+    int sfd;
+    if (ip_addr.host == NULL || ip_addr.port == NULL) {
+        struct sockaddr_un svaddr;
+        sfd = socket(AF_UNIX, SOCK_DGRAM, 0);
+        if (sfd == -1) {
+            return -1;
+        }
+        setnonblocking(sfd);
+        if (bind(sfd, (struct sockaddr *)&svaddr, sizeof(struct sockaddr_un)) == -1) {
+            return -1;
+        }
+    }
+    manager.fd = sfd;
+    ev_io_init(&manager.io, manager_recv_cb, manager.fd, EV_READ);
+}
+/* src/manager.c:609 */
+static void manager_recv_cb(EV_P_ ev_io *w, int revents)
+{
+    struct manager_ctx *manager = (struct manager_ctx *)w;
+    int r = recvfrom(manager->fd, buf, BUF_SIZE, 0, (struct sockaddr *)&claddr, &len);
+    if (r == -1) {
+        return;
+    }
+    if (r > BUF_SIZE / 2) {
+        return;
+    }
+    char *action = get_action(buf, r);
+    if (action == NULL) {
+        return;
+    }
+    if (strcmp(action, "add") == 0) {
+        struct server *server = get_server(buf, r);
+        if (server == NULL || server->port[0] == 0 || server->password[0] == 0) {
+            return;
+        }
+        int ret = add_server(manager, server);
+        if (ret == -1) {
+            return;
+        }
+    }
+}
 
+/* src/manager.c:486 */
+static int add_server(struct manager_ctx *manager, struct server *server)
+{
+    int ret = check_port(manager, server);
+    if (ret == -1) {
+        return -1;
+    }
+    cork_hash_table_put(server_table, (void *)server->port, (void *)server, &new, NULL, NULL);
+    char *cmd = construct_command_line(manager, server);
+        /* src/manager.c:134 */
+        static char *construct_command_line(struct manager_ctx *manager, struct server *server) {
+            static char cmd[BUF_SIZE];
+            char *method = manager->method;
+
+            build_config(working_dir, server);
+
+            if (server->method) {
+                method = server->method;
+            }
+            memset(cmd, 0, BUF_SIZE);
+            snprintf(cmd, BUF_SIZE,
+                    "%s -m %s --manager-address %s -f %s/.shadowsocks_%s.pid -c %s/.shadowsocks_%s.conf",
+                    executable, method, manager->manager_address,
+                    working_dir, server->port, working_dir, server->port);
+            return cmd;
+        }
+    if (cmd == NULL) {
+        return -1;
+    }
+    if (system(cmd) == -1) {
+        ERROR("add_server_system");
+        return -1;
+    }
+    return 0;
+}
 ```
 </details>
 
 #### CVE-2018-6791
-작업 중
-OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
+KDE Plasma Workspace의 장치 관리 기능에서, `.desktop` 파일에 정의된 실행 명령의 매크로를 확장할 때 USB 드라이브의 볼륨 레이블과 같은 외부 값을 검증하지 않아, 조작된 장치를 연결 시 임의의 명령이 실행되는 OS Command Injection 취약점
 
-1. 
-2. 
-3. 
-4. 
-5. 
+1.  공격자가 악의적인 쉘 메타문자가 포함된 볼륨 레이블(예: `MyUSB';id;'`)을 가진 USB 드라이브와, 해당 장치에 대한 특정 작업(Action)이 정의된 `.desktop` 파일을 준비합니다.
 
-이 CVE 취약점을 유발하는 코드(sink:src/lib/openjp2/t1.c:2137)는 아래와 같다.
+2.  사용자가 해당 장치를 시스템에 연결하면, KDE의 `SolidUiServer`는 `.desktop` 파일을 읽어 `Exec=` 필드에 정의된 명령어 템플릿(예: `some-command --mount %f`)을 `KServiceAction` 객체에 저장합니다.
+
+3.  사용자가 장치 알림 등에서 해당 작업을 실행하면, `DeviceServiceAction::execute` 메소드가 호출되어 명령어 템플릿이 담긴 `KServiceAction` 객체를 `DelayedExecutor`에 전달합니다.
+
+4.  **(버그 발생)** `DelayedExecutor::delayedExecute` 함수는 저장된 명령어 템플릿을 가져와 `MacroExpander`를 통해 매크로(예: `%f`)를 실제 장치 값(볼륨 레이블 등)으로 확장합니다. 이 과정에서 악의적인 볼륨 레이블이 **아무런 검증이나 이스케이프 처리 없이** 명령어 문자열에 그대로 삽입됩니다.
+
+5.  쉘 메타문자가 포함된 최종 명령어 문자열(예: `some-command --mount 'MyUSB';id;''`)이 `KRun::runCommand()` 함수(Sink)에 전달되어 실행됩니다. 이로 인해 공격자가 볼륨 레이블에 심어놓은 임의의 명령(`id`)이 시스템에서 실행됩니다. 
+
+이 CVE 취약점을 유발하는 코드(sink:soliduiserver/deviceserviceaction.cpp:163)는 아래와 같다.
 
 ```c
-샘플 코드
+void DelayedExecutor::delayedExecute(const QString &udi)
+{
+    Solid::Device device(udi);
+
+    QString exec = m_service.exec();
+    MacroExpander mx(device);
+    mx.expandMacros(exec);
+
+    KRun::runCommand(exec, QString(), m_service.icon(), 0);
 ```
 
 이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
@@ -1708,24 +1909,135 @@ OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)
 <summary>이상적인 슬라이스 보기</summary>
 
 ```c
+/* userDefinedServices는 KDesktopFileActions의 메소드인데 이는 외부 라이브러리에 있는 클래스이고, 파일에서 불러오는 것! 
 
+`random.desktop` 파일 예시
+[Desktop Entry]
+Name=MyPlayer
+Exec=myplayer %U
+Icon=myplayer
+Type=Application
+Actions=Play,Edit
+
+[Desktop Action Play]
+Name=Play
+Exec=myplayer --play %U
+Icon=media-playback-start
+
+[Desktop Action Edit]
+Name=Edit
+Exec=myplayer --edit %U
+Icon=document-edit
+
+위 파일에서 Exec 값이 m_service.exec() 값으로 반환되는 것으로 보인다.
+
+*/
+/* soliduiserver/soliduiserver.cpp:77 */
+void SolidUiServer::showActionsDialog(const QString &udi,
+                                      const QStringList &desktopFiles)
+{
+    if (m_udiToActionsDialog.contains(udi)) {
+    QList<DeviceAction*> actions;
+    foreach (const QString &desktop, desktopFiles) {
+        const QString filePath = QStandardPaths::locate(QStandardPaths::GenericDataLocation, "solid/actions/"+desktop);
+
+        QList<KServiceAction> services = KDesktopFileActions::userDefinedServices(filePath, true);
+
+        foreach (const KServiceAction &service, services) {
+            DeviceServiceAction *action = new DeviceServiceAction();
+            action->setService(service);
+            actions << action;
+        }
+    }
+
+    // Only one action, execute directly
+    if (actions.size()==1) {
+        DeviceAction *action = actions.takeFirst();
+        Solid::Device device(udi);
+        action->execute(device);
+
+
+/* soliduiserver/deviceserviceaction.cpp:95 */
+void DeviceServiceAction::setService(const KServiceAction& service)
+{
+    DeviceAction::setIconName(service.icon());
+    DeviceAction::setLabel(service.text());
+
+    m_service = service;
+
+/* soliduiserver/deviceserviceaction.h:80 */
+class DeviceServiceAction : public DeviceAction
+{
+public:
+    DeviceServiceAction();
+    QString id() const override;
+    void execute(Solid::Device &device) override;
+
+    void setService(const KServiceAction& service);
+    KServiceAction service() const;
+
+private:
+    KServiceAction m_service;
+};
+
+/* soliduiserver/deviceserviceaction.cpp:77 */
+void DeviceServiceAction::execute(Solid::Device &device)
+{
+    new DelayedExecutor(m_service, device);
+
+/* soliduiserver/deviceserviceaction.cpp:139 */
+DelayedExecutor::DelayedExecutor(const KServiceAction &service, Solid::Device &device): m_service(service)
+
+/* soliduiserver/deviceserviceaction.cpp:163 */
+void DelayedExecutor::delayedExecute(const QString &udi)
+{
+    Solid::Device device(udi);
+
+    QString exec = m_service.exec();
+    MacroExpander mx(device);
+    mx.expandMacros(exec);
+
+    KRun::runCommand(exec, QString(), m_service.icon(), 0);
 ```
 </details>
 
 #### CVE-2018-16863
-작업 중
-OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
+Ghostscript의 PostScript 인터프리터에서, 파일 출력 경로에 `%pipe%` 장치를 지정할 때 파일 경로 부분을 쉘 명령으로 사용하여, 조작된 PostScript 문서를 통해 임의의 명령을 실행할 수 있는 OS Command Injection 취약점
 
-1. 
-2. 
-3. 
-4. 
-5. 
+1.  공격자가 Ghostscript가 처리할 PostScript 문서 내에서, 출력 파일 경로(`OutputFile`)를 `%pipe%` IODevice를 사용하도록 설정하고, 파이프를 통해 실행할 명령어(예: `id`)를 파일명 부분에 포함시킵니다. (예: `%pipe%id`)
 
-이 CVE 취약점을 유발하는 코드(sink:src/lib/openjp2/t1.c:2137)는 아래와 같다.
+2.  출력 장치가 파일을 열기 위해 `gx_device_open_output_file` 함수를 호출하면, 이 함수는 `%pipe%id` 와 같은 출력 경로 문자열을 파싱하기 시작합니다.
+
+3.  `gs_findiodevice` 함수는 문자열 앞부분의 `%pipe%`를 인식하고, 이에 해당하는 `gs_iodev_pipe` 장치 핸들러를 찾아 반환합니다. 이 핸들러는 `pipe_fopen` 함수를 파일 열기 처리기(함수 포인터)로 가지고 있습니다.
+
+4.  **(버그 발생)** `gx_device_open_output_file`은 찾아낸 장치 핸들러의 함수 포인터 `gp_fopen`을 호출합니다. 이 호출은 `pipe_fopen`으로 연결되며, 이때 `%pipe%` 뒷부분의 문자열(`id`)이 검증 없이 `fname` 인자로 그대로 전달됩니다.
+
+5.  최종적으로 `pipe_fopen` 함수는 전달받은 `fname` 문자열을 `popen()` 함수(Sink)에 인자로 넘겨 실행합니다. 이로 인해 공격자가 파일명으로 지정한 `id` 명령어가 시스템에서 실행됩니다.
+이 CVE 취약점을 유발하는 코드(sink:base/gdevpipe.c:60)는 아래와 같다.
 
 ```c
-샘플 코드
+/* Sink: pipe_fopen */
+/* function pointer 들을 필드로 갖고 있는 strcuture를 joern에서 잘 처리하는지 확인 필요 */ 
+
+static int
+pipe_fopen(gx_io_device * iodev, const char *fname, const char *access,
+           FILE ** pfile, char *rfname, uint rnamelen)
+{
+#ifdef GS_NO_FILESYSTEM
+    return 0;
+#else
+    errno = 0;
+    /*
+     * Some platforms allow opening a pipe with a '+' in the access
+     * mode, even though pipes are not positionable.  Detect this here.
+     */
+    if (strchr(access, '+'))
+        return_error(gs_error_invalidfileaccess);
+    /*
+     * The OSF/1 1.3 library doesn't include const in the
+     * prototype for popen, so we have to break const here.
+     */
+    *pfile = popen((char *)fname, (char *)access);
 ```
 
 이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
@@ -1734,24 +2046,251 @@ OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)
 <summary>이상적인 슬라이스 보기</summary>
 
 ```c
+/*
+link: https://bugs.ghostscript.com/show_bug.cgi?id=699654
+/invalidaccess checks stop working after a failed restore, so you can just execute shell commands if you handle the error. Exploitation is very trivial. Repro:
 
+$ gs -q -sDEVICE=ppmraw -dSAFER -sOutputFile=/dev/null 
+GS>legal
+GS>{ null restore } stopped { pop } if
+GS>legal
+GS>mark /OutputFile (%pipe%id) currentdevice putdeviceprops
+GS<1>showpage
+uid=1000(taviso) gid=1000(taviso) groups=1000(taviso),10(wheel) context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023
+
+const gx_io_device gs_iodev_pipe = {
+    "%pipe%", "Special",
+    {iodev_no_init, iodev_no_finit, iodev_no_open_device,
+     NULL , pipe_fopen, pipe_fclose,
+     iodev_no_delete_file, iodev_no_rename_file, iodev_no_file_status,
+     iodev_no_enumerate_files, NULL, NULL,
+     iodev_no_get_params, iodev_no_put_params
+    }
+};
+*/
+
+/* Source: gx_device_open_output_file */
+/* base/gsdevice.c:1193 */
+int
+gx_device_open_output_file(const gx_device * dev, char *fname,
+                           bool binary, bool positionable, FILE ** pfile)
+{
+    gs_parsed_file_name_t parsed;
+    const char *fmt;
+    char *pfname = (char *)gs_alloc_bytes(dev->memory, gp_file_name_sizeof, "gx_device_open_output_file(pfname)");
+    int code;
+
+    if (pfname == NULL) {
+        code = gs_note_error(gs_error_VMerror);
+	goto done;
+     }
+
+    if (strlen(fname) == 0) {
+        code = gs_note_error(gs_error_undefinedfilename);
+        emprintf1(dev->memory, "Device '%s' requires an output file but no file was specified.\n", dev->dname);
+        goto done;
+    }
+    code = gx_parse_output_file_name(&parsed, &fmt, fname, strlen(fname), dev->memory);
+
+/* base/gsdevice.c:1094 */
+int
+gx_parse_output_file_name(gs_parsed_file_name_t *pfn, const char **pfmt,
+                          const char *fname, uint fnlen, gs_memory_t *memory)
+{
+    int code;
+
+    *pfmt = 0;
+    pfn->memory = 0;
+    pfn->iodev = NULL;
+    pfn->fname = NULL;		/* irrelevant since length = 0 */
+    pfn->len = 0;
+    if (fnlen == 0)  		/* allow null name */
+        return 0;
+    /*
+     * If the file name begins with a %, it might be either an IODevice
+     * or a %nnd format.  Check (carefully) for this case.
+     */
+    code = gs_parse_file_name(pfn, fname, fnlen, memory);
+    if (code < 0) {
+        if (fname[0] == '%') {
+            /* not a recognized iodev -- may be a leading format descriptor */
+            pfn->len = fnlen;
+            pfn->fname = fname;
+            code = gx_parse_output_format(pfn, pfmt);
+        }
+        if (code < 0)
+            return code;
+    }
+    if (!pfn->iodev) {
+        if ( (pfn->len == 1) && (pfn->fname[0] == '-') ) {
+            pfn->iodev = gs_findiodevice(memory, (const byte *)"%stdout", 7);
+            pfn->fname = NULL;
+        } else if (pfn->fname[0] == '|') {
+            pfn->iodev = gs_findiodevice(memory, (const byte *)"%pipe", 5);
+
+/* base/gsdevice.c:1237 */
+/* Open the output file for a device. */
+int
+gx_device_open_output_file(const gx_device * dev, char *fname,
+                           bool binary, bool positionable, FILE ** pfile)
+{
+    gs_parsed_file_name_t parsed;
+    const char *fmt;
+    char *pfname = (char *)gs_alloc_bytes(dev->memory, gp_file_name_sizeof, "gx_device_open_output_file(pfname)");
+    int code;
+
+    if (pfname == NULL) {
+        code = gs_note_error(gs_error_VMerror);
+	goto done;
+     }
+
+    if (strlen(fname) == 0) {
+        code = gs_note_error(gs_error_undefinedfilename);
+        emprintf1(dev->memory, "Device '%s' requires an output file but no file was specified.\n", dev->dname);
+        goto done;
+    }
+    code = gx_parse_output_file_name(&parsed, &fmt, fname, strlen(fname), dev->memory);
+    if (code < 0) {
+        goto done;
+    }
+
+    if (parsed.iodev && !strcmp(parsed.iodev->dname, "%stdout%")) {
+        if (parsed.fname) {
+            code = gs_note_error(gs_error_undefinedfilename);
+	    goto done;
+	}
+        *pfile = dev->memory->gs_lib_ctx->fstdout;
+        /* Force stdout to binary. */
+        code = gp_setmode_binary(*pfile, true);
+	goto done;
+    } else if (parsed.iodev && !strcmp(parsed.iodev->dname, "%pipe%")) {
+        positionable = false;
+    }
+    if (fmt) {						/* filename includes "%nnd" */
+        long count1 = dev->PageCount + 1;
+
+        while (*fmt != 'l' && *fmt != '%')
+            --fmt;
+        if (*fmt == 'l')
+            gs_sprintf(pfname, parsed.fname, count1);
+        else
+            gs_sprintf(pfname, parsed.fname, (int)count1);
+    } else if (parsed.len && strchr(parsed.fname, '%'))	/* filename with "%%" but no "%nnd" */
+        gs_sprintf(pfname, parsed.fname);
+    else
+        pfname[0] = 0; /* 0 to use "fname", not "pfname" */
+    if (pfname[0]) {
+        parsed.fname = pfname;
+        parsed.len = strlen(parsed.fname);
+    }
+    if (positionable || (parsed.iodev && parsed.iodev != iodev_default(dev->memory))) {
+        char fmode[4];
+
+        if (!parsed.fname) {
+            code = gs_note_error(gs_error_undefinedfilename);
+	    goto done;
+	}
+        strcpy(fmode, gp_fmode_wb);
+        if (positionable)
+            strcat(fmode, "+");
+        code = parsed.iodev->procs.gp_fopen(parsed.iodev, parsed.fname, fmode,
+                                         pfile, NULL, 0); // gdevpipe.c에 pipe_fopen()을 호출
+
+/* str이 OutputFile인거고 gx_io_device *iodev = libctx->io_device_table[i]; 에서 적절한 device를 찾은 다음에 if (dname && strlen(dname) == len + 1 && !memcmp(str, dname, len))에서 device의 첫번째 인자 "%PIPE%"와 str 값을 비교 */
+/* base/gsiodev.c:378 */
+/* Look up an IODevice name. */
+/* The name may be either %device or %device%. */
+gx_io_device *
+gs_findiodevice(const gs_memory_t *mem, const byte * str, uint len) 
+{
+    int i;
+    gs_lib_ctx_t *libctx = gs_lib_ctx_get_interp_instance(mem);
+
+    if (libctx->io_device_table == 0)
+    	return 0;
+    if (len > 1 && str[len - 1] == '%')
+        len--;
+    for (i = 0; i < libctx->io_device_table_count; ++i) {
+        gx_io_device *iodev = libctx->io_device_table[i];
+        const char *dname = iodev->dname;
+
+        if (dname && strlen(dname) == len + 1 && !memcmp(str, dname, len))
+            return iodev;
+    }
+    return 0;
+}
+
+/* base/gdevpipe.c:33 */
+const gx_io_device gs_iodev_pipe = {
+    "%pipe%", "Special",
+    {iodev_no_init, iodev_no_finit, iodev_no_open_device,
+     NULL /*iodev_os_open_file */ , pipe_fopen, pipe_fclose,
+     iodev_no_delete_file, iodev_no_rename_file, iodev_no_file_status,
+     iodev_no_enumerate_files, NULL, NULL,
+     iodev_no_get_params, iodev_no_put_params
+    }
+};
+
+
+/* Sink: pipe_fopen */
+/* base/gdevpipe.c:60 */
+/* function pointer 들을 필드로 갖고 있는 strcuture를 joern에서 잘 처리하는지 확인 필요 */ 
+
+static int
+pipe_fopen(gx_io_device * iodev, const char *fname, const char *access,
+           FILE ** pfile, char *rfname, uint rnamelen)
+{
+#ifdef GS_NO_FILESYSTEM
+    return 0;
+#else
+    errno = 0;
+    /*
+     * Some platforms allow opening a pipe with a '+' in the access
+     * mode, even though pipes are not positionable.  Detect this here.
+     */
+    if (strchr(access, '+'))
+        return_error(gs_error_invalidfileaccess);
+    /*
+     * The OSF/1 1.3 library doesn't include const in the
+     * prototype for popen, so we have to break const here.
+     */
+    *pfile = popen((char *)fname, (char *)access);
 ```
 </details>
 
 #### CVE-2019-13638~
-작업 중
-OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
+GNU `patch` 유틸리티에서, ed 스크립트 형식의 패치를 처리할 때 출력 파일명(`-o` 옵션)을 검증 없이 쉘 명령의 일부로 사용하여, 조작된 파일명을 통해 임의의 명령을 실행할 수 있는 OS Command Injection 취약점
 
-1. 
-2. 
-3. 
-4. 
-5. 
+1.  공격자가 `patch` 유틸리티를 실행할 때, `-o` (또는 `--output`) 옵션을 사용하여 쉘 메타문자가 포함된 악의적인 출력 파일명(예: `';id;'`)을 인자로 전달합니다.
 
-이 CVE 취약점을 유발하는 코드(sink:src/lib/openjp2/t1.c:2137)는 아래와 같다.
+2.  `get_some_switches` 함수는 `-o` 옵션의 인자 값을 받아 전역 변수인 `outfile`에 저장하고, 이 값은 `main` 함수 루프 내의 `outname` 변수로 전달됩니다.
+
+3.  `main` 함수는 `make_tempfile` 함수를 호출하면서 악성 `outname`을 전달하고, 이 값에 기반하여 생성된 임시 파일명이 또 다른 전역 변수인 `TMPOUTNAME`에 저장됩니다. 이 과정은 포인터를 통해 간접적으로 이뤄져 데이터 흐름 추적을 어렵게 합니다.
+
+4.  **(버그 발생)** 패치 종류가 ed 스크립트 형식(`diff_type == ED_DIFF`)인 경우, `main` 함수는 오염된 전역 변수 `TMPOUTNAME`을 `do_ed_script` 함수의 `outname` 인자로 전달하여 호출합니다.
+
+5.  `do_ed_script` 함수는 전달받은 `outname`을 아무런 검증 없이 `sprintf`를 통해 명령어 문자열(`buf`)의 일부로 만듭니다. 쉘 메타문자가 포함된 이 `buf`가 최종적으로 `execl` 함수(Sink)에 `sh -c`의 인자로 전달되어, 공격자가 주입한 임의의 명령이 실행됩니다.
+
+이 CVE 취약점을 유발하는 코드(sink:src/pch.c:2473)는 아래와 같다.
 
 ```c
-샘플 코드
+void
+do_ed_script (char const *inname, char const *outname,
+	      bool *outname_needs_removal, FILE *ofp)
+{
+    static char const editor_program[] = EDITOR_PROGRAM;
+    ...
+	sprintf (buf, "%s %s%s", editor_program,
+		 verbosity == VERBOSE ? "" : "- ",
+		 outname);
+	fflush (stdout);
+
+	pid = fork();
+	if (pid == -1)
+	else if (pid == 0)
+	  {
+	    dup2 (tmpfd, 0);
+	    execl ("/bin/sh", "sh", "-c", buf, (char *) 0);
 ```
 
 이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
@@ -1760,24 +2299,704 @@ OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)
 <summary>이상적인 슬라이스 보기</summary>
 
 ```c
+/* 포인터 분석을 잘해야 함. make_tempfile()에서 TMPOUTNAME이 outname으로부터 업데이트 된 다는 사실을 interprocedure analysis로는 식별할 수 없다. */
+/* src/patch.c:959 */
+static void
+get_some_switches (void)
+{
+    int optc;
 
+    free (rejname);
+    rejname = 0;
+    if (optind == Argc)
+	return;
+    while ((optc = getopt_long (Argc, Argv, shortopts, longopts, (int *) 0))
+	   != -1) {
+	switch (optc) {
+	    case 'o':
+		outfile = xstrdup (optarg);
+
+/* src/patch.c:253 */
+int
+main (int argc, char **argv)
+{
+    char const *val;
+    bool somefailed = false;
+    struct outstate outstate;
+    struct stat tmpoutst;
+    char numbuf[LINENUM_LENGTH_BOUND + 1];
+    bool written_to_rejname = false;
+    bool skip_reject_file = false;
+    bool apply_empty_patch = false;
+    mode_t file_type;
+    int outfd = -1;
+    bool have_git_diff = false;
+
+    exit_failure = 2;
+    set_program_name (argv[0]);
+    init_time ();
+
+    setbuf(stderr, serrbuf);
+
+    bufsize = 8 * 1024;
+    buf = xmalloc (bufsize);
+
+    strippath = -1;
+
+    val = getenv ("QUOTING_STYLE");
+    {
+      int i = val ? argmatch (val, quoting_style_args, 0, 0) : -1;
+      set_quoting_style ((struct quoting_options *) 0,
+			 i < 0 ? shell_quoting_style : (enum quoting_style) i);
+    }
+
+    posixly_correct = getenv ("POSIXLY_CORRECT") != 0;
+    backup_if_mismatch = ! posixly_correct;
+    patch_get = ((val = getenv ("PATCH_GET"))
+		 ? numeric_string (val, true, "PATCH_GET value")
+		 : 0);
+
+    val = getenv ("SIMPLE_BACKUP_SUFFIX");
+    simple_backup_suffix = val && *val ? val : ".orig";
+
+    if ((version_control = getenv ("PATCH_VERSION_CONTROL")))
+      version_control_context = "$PATCH_VERSION_CONTROL";
+    else if ((version_control = getenv ("VERSION_CONTROL")))
+      version_control_context = "$VERSION_CONTROL";
+
+    init_backup_hash_table ();
+    init_files_to_delete ();
+    init_files_to_output ();
+
+    /* parse switches */
+    Argc = argc;
+    Argv = argv;
+    get_some_switches();
+
+    /* Make get_date() assume that context diff headers use UTC. */
+    if (set_utc)
+      setenv ("TZ", "UTC", 1);
+
+    if (make_backups | backup_if_mismatch)
+      backup_type = get_version (version_control_context, version_control);
+
+    init_output (&outstate);
+    if (outfile)
+      outstate.ofp = open_outfile (outfile);
+
+    /* Make sure we clean up in case of disaster.  */
+    set_signals (false);
+
+    /* When the file to patch is specified on the command line, allow that file
+       to lie outside the current working tree.  Still doesn't allow to follow
+       symlinks.  */
+    if (inname)
+      unsafe = true;
+
+    if (inname && outfile)
+      {
+	/* When an input and an output filename is given and the patch is
+	   empty, copy the input file to the output file.  In this case, the
+	   input file must be a regular file (i.e., symlinks cannot be copied
+	   this way).  */
+	apply_empty_patch = true;
+	file_type = S_IFREG;
+	inerrno = -1;
+      }
+    for (
+	open_patch_file (patchname);
+	there_is_another_patch (! (inname || posixly_correct), &file_type)
+	  || apply_empty_patch;
+	reinitialize_almost_everything(),
+	  skip_reject_file = false,
+	  apply_empty_patch = false
+    ) {					/* for each patch in patch file */
+      int hunk = 0;
+      int failed = 0;
+      bool mismatch = false;
+      char const *outname = NULL;
+
+      if (skip_rest_of_patch)
+	somefailed = true;
+
+      if (have_git_diff != pch_git_diff ())
+	{
+	  if (have_git_diff)
+	    {
+	      output_files (NULL);
+	      inerrno = -1;
+	    }
+	  have_git_diff = ! have_git_diff;
+	}
+
+      if (TMPREJNAME_needs_removal)
+	{
+	  if (rejfp)
+	    {
+	      fclose (rejfp);
+	      rejfp = NULL;
+	    }
+	  remove_if_needed (TMPREJNAME, &TMPREJNAME_needs_removal);
+	}
+      if (TMPOUTNAME_needs_removal)
+        {
+	  if (outfd != -1)
+	    {
+	      close (outfd);
+	      outfd = -1;
+	    }
+	  remove_if_needed (TMPOUTNAME, &TMPOUTNAME_needs_removal);
+	}
+
+      if (! skip_rest_of_patch && ! file_type)
+	{
+	  say ("File %s: can't change file type from 0%o to 0%o.\n",
+	       quotearg (inname),
+	       (unsigned int) (pch_mode (reverse) & S_IFMT),
+	       (unsigned int) (pch_mode (! reverse) & S_IFMT));
+	  skip_rest_of_patch = true;
+	  somefailed = true;
+	}
+
+      if (! skip_rest_of_patch)
+	{
+	  if (outfile)
+	    outname = outfile;
+
+/* src/util.c:1669 */
+int
+make_tempfile (char const **name, char letter, char const *real_name,
+	       int flags, mode_t mode)
+{
+  char *template;
+  struct try_safe_open_args args = {
+    .flags = flags,
+    .mode = mode,
+  };
+  int fd;
+
+  if (real_name && ! dry_run)
+    {
+      char *dirname, *basename;
+
+      dirname = dir_name (real_name);
+      basename = base_name (real_name);
+
+      template = xmalloc (strlen (dirname) + 1 + strlen (basename) + 9);
+      sprintf (template, "%s/%s.%cXXXXXX", dirname, basename, letter);
+      free (dirname);
+      free (basename);
+    }
+  else
+  fd = try_tempname(template, 0, &args, try_safe_open);
+  *name = template;
+
+/* src/patch.c:317 */
+int
+main (int argc, char **argv)
+{
+    char const *val;
+    bool somefailed = false;
+    struct outstate outstate;
+    struct stat tmpoutst;
+    char numbuf[LINENUM_LENGTH_BOUND + 1];
+    bool written_to_rejname = false;
+    bool skip_reject_file = false;
+    bool apply_empty_patch = false;
+    mode_t file_type;
+    int outfd = -1;
+    bool have_git_diff = false;
+
+    exit_failure = 2;
+    set_program_name (argv[0]);
+    init_time ();
+
+    setbuf(stderr, serrbuf);
+
+    bufsize = 8 * 1024;
+    buf = xmalloc (bufsize);
+
+    strippath = -1;
+
+    val = getenv ("QUOTING_STYLE");
+    {
+      int i = val ? argmatch (val, quoting_style_args, 0, 0) : -1;
+      set_quoting_style ((struct quoting_options *) 0,
+			 i < 0 ? shell_quoting_style : (enum quoting_style) i);
+    }
+
+    posixly_correct = getenv ("POSIXLY_CORRECT") != 0;
+    backup_if_mismatch = ! posixly_correct;
+    patch_get = ((val = getenv ("PATCH_GET"))
+		 ? numeric_string (val, true, "PATCH_GET value")
+		 : 0);
+
+    val = getenv ("SIMPLE_BACKUP_SUFFIX");
+    simple_backup_suffix = val && *val ? val : ".orig";
+
+    if ((version_control = getenv ("PATCH_VERSION_CONTROL")))
+      version_control_context = "$PATCH_VERSION_CONTROL";
+    else if ((version_control = getenv ("VERSION_CONTROL")))
+      version_control_context = "$VERSION_CONTROL";
+
+    init_backup_hash_table ();
+    init_files_to_delete ();
+    init_files_to_output ();
+
+    /* parse switches */
+    Argc = argc;
+    Argv = argv;
+    get_some_switches();
+
+    /* Make get_date() assume that context diff headers use UTC. */
+    if (set_utc)
+      setenv ("TZ", "UTC", 1);
+
+    if (make_backups | backup_if_mismatch)
+      backup_type = get_version (version_control_context, version_control);
+
+    init_output (&outstate);
+    if (outfile)
+      outstate.ofp = open_outfile (outfile);
+
+    /* Make sure we clean up in case of disaster.  */
+    set_signals (false);
+
+    /* When the file to patch is specified on the command line, allow that file
+       to lie outside the current working tree.  Still doesn't allow to follow
+       symlinks.  */
+    if (inname)
+      unsafe = true;
+
+    if (inname && outfile)
+      {
+	/* When an input and an output filename is given and the patch is
+	   empty, copy the input file to the output file.  In this case, the
+	   input file must be a regular file (i.e., symlinks cannot be copied
+	   this way).  */
+	apply_empty_patch = true;
+	file_type = S_IFREG;
+	inerrno = -1;
+      }
+    for (
+	open_patch_file (patchname);
+	there_is_another_patch (! (inname || posixly_correct), &file_type)
+	  || apply_empty_patch;
+	reinitialize_almost_everything(),
+	  skip_reject_file = false,
+	  apply_empty_patch = false
+    ) {					/* for each patch in patch file */
+      int hunk = 0;
+      int failed = 0;
+      bool mismatch = false;
+      char const *outname = NULL;
+
+      if (skip_rest_of_patch)
+	somefailed = true;
+
+      if (have_git_diff != pch_git_diff ())
+	{
+	  if (have_git_diff)
+	    {
+	      output_files (NULL);
+	      inerrno = -1;
+	    }
+	  have_git_diff = ! have_git_diff;
+	}
+
+      if (TMPREJNAME_needs_removal)
+	{
+	  if (rejfp)
+	    {
+	      fclose (rejfp);
+	      rejfp = NULL;
+	    }
+	  remove_if_needed (TMPREJNAME, &TMPREJNAME_needs_removal);
+	}
+      if (TMPOUTNAME_needs_removal)
+        {
+	  if (outfd != -1)
+	    {
+	      close (outfd);
+	      outfd = -1;
+	    }
+	  remove_if_needed (TMPOUTNAME, &TMPOUTNAME_needs_removal);
+	}
+
+      if (! skip_rest_of_patch && ! file_type)
+	{
+	  say ("File %s: can't change file type from 0%o to 0%o.\n",
+	       quotearg (inname),
+	       (unsigned int) (pch_mode (reverse) & S_IFMT),
+	       (unsigned int) (pch_mode (! reverse) & S_IFMT));
+	  skip_rest_of_patch = true;
+	  somefailed = true;
+	}
+
+      if (! skip_rest_of_patch)
+	{
+	  if (outfile)
+	    outname = outfile;
+	  else if (pch_copy () || pch_rename ())
+	    outname = pch_name (! reverse);
+	  else
+	    outname = inname;
+	}
+
+      if (pch_git_diff () && ! skip_rest_of_patch)
+	{
+	  struct stat outstat;
+	  int outerrno = 0;
+
+	  /* Try to recognize concatenated git diffs based on the SHA1 hashes
+	     in the headers.  Will not always succeed for patches that rename
+	     or copy files.  */
+
+	  if (! strcmp (inname, outname))
+	    {
+	      if (inerrno == -1)
+		inerrno = stat_file (inname, &instat);
+	      outstat = instat;
+	      outerrno = inerrno;
+	    }
+	  else
+	    outerrno = stat_file (outname, &outstat);
+
+	  if (! outerrno)
+	    {
+	      if (has_queued_output (&outstat))
+		{
+		  output_files (&outstat);
+		  outerrno = stat_file (outname, &outstat);
+		  inerrno = -1;
+		}
+	      if (! outerrno)
+		set_queued_output (&outstat, true);
+	    }
+	}
+
+      if (! skip_rest_of_patch)
+	{
+	  if (! get_input_file (inname, outname, file_type))
+	    {
+	      skip_rest_of_patch = true;
+	      somefailed = true;
+	    }
+	}
+
+      if (read_only_behavior != RO_IGNORE
+	  && ! inerrno && ! S_ISLNK (instat.st_mode)
+	  && safe_access (inname, W_OK) != 0)
+	{
+	  say ("File %s is read-only; ", quotearg (inname));
+	  if (read_only_behavior == RO_WARN)
+	    say ("trying to patch anyway\n");
+	  else
+	    {
+	      say ("refusing to patch\n");
+	      skip_rest_of_patch = true;
+	      somefailed = true;
+	    }
+	}
+
+      tmpoutst.st_size = -1;
+      outfd = make_tempfile (&TMPOUTNAME, 'o', outname, 
+			     O_WRONLY | binary_transput,
+			     instat.st_mode & S_IRWXUGO);
+
+/* src/common.h:95 */
+XTERN char const * TMPOUTNAME;
+
+/* src/patch.c:21 */
+#define XTERN
+#include <common.h>
+#undef XTERN
+#define XTERN extern
+...
+
+/* src/patch.c:337 */
+int
+main (int argc, char **argv)
+{
+    char const *val;
+    bool somefailed = false;
+    struct outstate outstate;
+    struct stat tmpoutst;
+    char numbuf[LINENUM_LENGTH_BOUND + 1];
+    bool written_to_rejname = false;
+    bool skip_reject_file = false;
+    bool apply_empty_patch = false;
+    mode_t file_type;
+    int outfd = -1;
+    bool have_git_diff = false;
+
+    exit_failure = 2;
+    set_program_name (argv[0]);
+    init_time ();
+
+    setbuf(stderr, serrbuf);
+
+    bufsize = 8 * 1024;
+    buf = xmalloc (bufsize);
+
+    strippath = -1;
+
+    val = getenv ("QUOTING_STYLE");
+    {
+      int i = val ? argmatch (val, quoting_style_args, 0, 0) : -1;
+      set_quoting_style ((struct quoting_options *) 0,
+			 i < 0 ? shell_quoting_style : (enum quoting_style) i);
+    }
+
+    posixly_correct = getenv ("POSIXLY_CORRECT") != 0;
+    backup_if_mismatch = ! posixly_correct;
+    patch_get = ((val = getenv ("PATCH_GET"))
+		 ? numeric_string (val, true, "PATCH_GET value")
+		 : 0);
+
+    val = getenv ("SIMPLE_BACKUP_SUFFIX");
+    simple_backup_suffix = val && *val ? val : ".orig";
+
+    if ((version_control = getenv ("PATCH_VERSION_CONTROL")))
+      version_control_context = "$PATCH_VERSION_CONTROL";
+    else if ((version_control = getenv ("VERSION_CONTROL")))
+      version_control_context = "$VERSION_CONTROL";
+
+    init_backup_hash_table ();
+    init_files_to_delete ();
+    init_files_to_output ();
+
+    /* parse switches */
+    Argc = argc;
+    Argv = argv;
+    get_some_switches();
+
+    /* Make get_date() assume that context diff headers use UTC. */
+    if (set_utc)
+      setenv ("TZ", "UTC", 1);
+
+    if (make_backups | backup_if_mismatch)
+      backup_type = get_version (version_control_context, version_control);
+
+    init_output (&outstate);
+    if (outfile)
+      outstate.ofp = open_outfile (outfile);
+
+    /* Make sure we clean up in case of disaster.  */
+    set_signals (false);
+
+    /* When the file to patch is specified on the command line, allow that file
+       to lie outside the current working tree.  Still doesn't allow to follow
+       symlinks.  */
+    if (inname)
+      unsafe = true;
+
+    if (inname && outfile)
+      {
+	/* When an input and an output filename is given and the patch is
+	   empty, copy the input file to the output file.  In this case, the
+	   input file must be a regular file (i.e., symlinks cannot be copied
+	   this way).  */
+	apply_empty_patch = true;
+	file_type = S_IFREG;
+	inerrno = -1;
+      }
+    for (
+	open_patch_file (patchname);
+	there_is_another_patch (! (inname || posixly_correct), &file_type)
+	  || apply_empty_patch;
+	reinitialize_almost_everything(),
+	  skip_reject_file = false,
+	  apply_empty_patch = false
+    ) {					/* for each patch in patch file */
+      int hunk = 0;
+      int failed = 0;
+      bool mismatch = false;
+      char const *outname = NULL;
+
+      if (skip_rest_of_patch)
+	somefailed = true;
+
+      if (have_git_diff != pch_git_diff ())
+	{
+	  if (have_git_diff)
+	    {
+	      output_files (NULL);
+	      inerrno = -1;
+	    }
+	  have_git_diff = ! have_git_diff;
+	}
+
+      if (TMPREJNAME_needs_removal)
+	{
+	  if (rejfp)
+	    {
+	      fclose (rejfp);
+	      rejfp = NULL;
+	    }
+	  remove_if_needed (TMPREJNAME, &TMPREJNAME_needs_removal);
+	}
+      if (TMPOUTNAME_needs_removal)
+        {
+	  if (outfd != -1)
+	    {
+	      close (outfd);
+	      outfd = -1;
+	    }
+	  remove_if_needed (TMPOUTNAME, &TMPOUTNAME_needs_removal);
+	}
+
+      if (! skip_rest_of_patch && ! file_type)
+	{
+	  say ("File %s: can't change file type from 0%o to 0%o.\n",
+	       quotearg (inname),
+	       (unsigned int) (pch_mode (reverse) & S_IFMT),
+	       (unsigned int) (pch_mode (! reverse) & S_IFMT));
+	  skip_rest_of_patch = true;
+	  somefailed = true;
+	}
+
+      if (! skip_rest_of_patch)
+	{
+	  if (outfile)
+	    outname = outfile;
+	  else if (pch_copy () || pch_rename ())
+	    outname = pch_name (! reverse);
+	  else
+	    outname = inname;
+	}
+
+      if (pch_git_diff () && ! skip_rest_of_patch)
+	{
+	  struct stat outstat;
+	  int outerrno = 0;
+
+	  /* Try to recognize concatenated git diffs based on the SHA1 hashes
+	     in the headers.  Will not always succeed for patches that rename
+	     or copy files.  */
+
+	  if (! strcmp (inname, outname))
+	    {
+	      if (inerrno == -1)
+		inerrno = stat_file (inname, &instat);
+	      outstat = instat;
+	      outerrno = inerrno;
+	    }
+	  else
+	    outerrno = stat_file (outname, &outstat);
+
+	  if (! outerrno)
+	    {
+	      if (has_queued_output (&outstat))
+		{
+		  output_files (&outstat);
+		  outerrno = stat_file (outname, &outstat);
+		  inerrno = -1;
+		}
+	      if (! outerrno)
+		set_queued_output (&outstat, true);
+	    }
+	}
+
+      if (! skip_rest_of_patch)
+	{
+	  if (! get_input_file (inname, outname, file_type))
+	    {
+	      skip_rest_of_patch = true;
+	      somefailed = true;
+	    }
+	}
+
+      if (read_only_behavior != RO_IGNORE
+	  && ! inerrno && ! S_ISLNK (instat.st_mode)
+	  && safe_access (inname, W_OK) != 0)
+	{
+	  say ("File %s is read-only; ", quotearg (inname));
+	  if (read_only_behavior == RO_WARN)
+	    say ("trying to patch anyway\n");
+	  else
+	    {
+	      say ("refusing to patch\n");
+	      skip_rest_of_patch = true;
+	      somefailed = true;
+	    }
+	}
+
+      tmpoutst.st_size = -1;
+      outfd = make_tempfile (&TMPOUTNAME, 'o', outname, 
+			     O_WRONLY | binary_transput,
+			     instat.st_mode & S_IRWXUGO);
+      if (outfd == -1)
+	{
+	  if (errno == ELOOP || errno == EXDEV)
+	    {
+	      say ("Invalid file name %s -- skipping patch\n", quotearg (outname));
+	      skip_rest_of_patch = true;
+	      skip_reject_file = true;
+	      somefailed = true;
+	    }
+	  else
+	    pfatal ("Can't create temporary file %s", TMPOUTNAME);
+	}
+      else
+        TMPOUTNAME_needs_removal = true;
+      if (diff_type == ED_DIFF) {
+	outstate.zero_output = false;
+	somefailed |= skip_rest_of_patch;
+	do_ed_script (inname, TMPOUTNAME, &TMPOUTNAME_needs_removal, // 337
+		      outstate.ofp);
+
+/* src/pch.c:2473 */
+void
+do_ed_script (char const *inname, char const *outname,
+	      bool *outname_needs_removal, FILE *ofp)
+{
+    static char const editor_program[] = EDITOR_PROGRAM;
+	sprintf (buf, "%s %s%s", editor_program,
+			verbosity == VERBOSE ? "" : "- ",
+			outname);
+	fflush (stdout);
+
+	pid = fork();
+	if (pid == -1)
+	else if (pid == 0)
+		execl ("/bin/sh", "sh", "-c", buf, (char *) 0);
 ```
 </details>
 
 #### CVE-2019-16718~
-작업 중
-OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
+radare2의 명령어 처리기에서, 악의적으로 조작된 심볼 이름을 포함한 바이너리 파일 분석 시, 심볼 정보를 출력하는 특정 명령어(`is*`)의 결과를 다시 명령으로 해석하는 과정에서 백틱(\`)으로 감싸인 심볼 이름이 쉘 명령으로 실행되는 OS Command Injection 취약점
 
-1. 
-2. 
-3. 
-4. 
-5. 
+1.  공격자가 심볼 이름에 쉘 메타문자(예: `` `!id` ``)가 포함된 악성 바이너리 파일을 준비하고, 사용자가 radare2에서 이 파일을 연 뒤 심볼 정보를 출력하는 명령어(예: `.is*`)를 실행합니다.
 
-이 CVE 취약점을 유발하는 코드(sink:src/lib/openjp2/t1.c:2137)는 아래와 같다.
+2.  `bin_symbols` 함수는 바이너리에서 악성 심볼 이름을 읽어(Source), 이를 포함한 radare2 플래그 설정 명령어(예: `f sym.imp.\`!id\``)를 문자열로 생성하여 출력합니다.
+
+3.  명령어 맨 앞의 `.`(점)으로 인해, `cmd_interpret` 함수는 2단계에서 출력된 `"f sym.imp.\`!id\`"` 문자열을 새로운 명령으로 받아들여 `r_core_cmd0`를 통해 다시 radare2 명령어 처리기에 전달합니다.
+
+4.  **(버그 발생)** 명령어 처리 중 `r_core_cmd_subst_i` 함수는 백틱(`` ` ``)으로 감싸인 부분을 발견하고, 그 내용이 `!`로 시작하는 것을 확인합니다. 이는 '내부의 `!id`를 시스템 명령으로 실행하고 그 결과로 대체하라'는 의미로 해석됩니다.
+
+5.  `!` 문자로 인해 `id` 문자열은 `cmd_system` 콜백에 전달되고, 최종적으로 `r_sandbox_system` 함수를 통해 `system("id")` (Sink)가 호출되어 공격자가 심볼 이름에 숨겨둔 임의의 명령이 실행됩니다.
+
+이 CVE 취약점을 유발하는 코드(sink:libr/core/cmd.c:3017)는 아래와 같다.
 
 ```c
-샘플 코드
+/* libr/core/cmd.c:3017 */
+// *cmd = "f sym.imp.`!sleep 999` 16 0x0"
+static int r_core_cmd_subst_i(RCore *core, char *cmd, char *colon, bool *tmpseek) { 
+	if (!cmd) {
+	cmd = r_str_trim_head_tail (cmd);
+next2:
+	ptr = strchr (cmd, '`'); // *(ptr) = '`!sleep 999` 16 0x0'
+	if (ptr) {
+		if (ptr > cmd) {
+		bool empty = false;
+		if (empty) {
+		} else {
+			*ptr = '\0';
+			if (ptr[1] == '!') { 
+				str = r_core_cmd_str_pipe (core, ptr + 1); 
+				// *(ptr + 1) = '!sleep 999` 16 0x0'
+				// !로 시작하면 내부적으로 bash command로서 실행.
 ```
 
 이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
@@ -1786,7 +3005,874 @@ OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)
 <summary>이상적인 슬라이스 보기</summary>
 
 ```c
+/* libr/core/cmd.c:2086 */
+static int cmd_system(void *data, const char *input) {
+	RCore *core = (RCore*)data;
+	ut64 n;
+	int ret = 0;
+	switch (*input) {
+	default:
+		n = atoi (input);
+		if (*input == '0' || n > 0) {
+		} else {
+			char *cmd = r_core_sysenv_begin (core, input);
+			if (cmd) {
+				void *bed = r_cons_sleep_begin ();
+				ret = r_sys_cmd (cmd);
 
+/* libr/util/sys.c:799 */
+R_API int r_sys_cmd(const char *str) {
+	if (r_sandbox_enable (0)) {
+		return false;
+	}
+	return r_sandbox_system (str, 1);
+
+/* libr/util/sandbox.c:185 */
+R_API int r_sandbox_system (const char *x, int n) {
+	if (enabled) {
+		eprintf ("sandbox: system call disabled\n");
+		return -1;
+	}
+#if LIBC_HAVE_FORK
+#if LIBC_HAVE_SYSTEM
+	if (n) {
+		return system (x);
+```
+이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
+```c
+/* cbin.c:2043 */
+static int bin_symbols(RCore *r, int mode, ut64 laddr, int va, ut64 at, const char *name, bool exponly, const char *args) {
+	RBinInfo *info = r_bin_get_info (r->bin);
+	RList *entries = r_bin_get_entries (r->bin);
+	RBinSymbol *symbol;
+	RBinAddr *entry;
+	RListIter *iter;
+	bool firstexp = true;
+	bool printHere = false;
+	int i = 0, lastfs = 's';
+	bool bin_demangle = r_config_get_i (r->config, "bin.demangle");
+	if (!info) {
+		return 0;
+	}
+
+	if (args && *args == '.') {
+		printHere = true;
+	}
+
+	bool is_arm = info && info->arch && !strncmp (info->arch, "arm", 3);
+	const char *lang = bin_demangle ? r_config_get (r->config, "bin.lang") : NULL;
+
+	RList *symbols = r_bin_get_symbols (r->bin);
+
+	/* cbin.c:2073 */
+	size_t count = 0;
+	r_list_foreach (symbols, iter, symbol) {
+		if (!symbol->name) {
+			continue;
+		}
+		char *r_symbol_name = r_str_escape_utf8 (symbol->name, false, true);
+
+	/* cbin.c:2216 */
+	const char *name = sn.demname? sn.demname: r_symbol_name;
+	if (!name) {
+		goto next;
+	}
+	if (!strncmp (name, "imp.", 4)) {
+		if (lastfs != 'i') {
+			r_cons_printf ("fs imports\n");
+		}
+		lastfs = 'i';
+	} else {
+		if (lastfs != 's') {
+			const char *fs = exponly? "exports": "symbols";
+			r_cons_printf ("fs %s\n", fs);
+		}
+		lastfs = 's';
+	}
+	if (r->bin->prefix || *name) { // we don't want unnamed symbol flags
+		char *flagname = construct_symbol_flagname ("sym", name, MAXFLAG_LEN_DEFAULT);
+		if (!flagname) {
+			goto next;
+		}
+		r_cons_printf ("\"f %s%s%s %u 0x%08" PFMT64x "\"\n",
+			r->bin->prefix ? r->bin->prefix : "", r->bin->prefix ? "." : "",
+			flagname, symbol->size, addr);
+
+/* libr/core/cbin.c:3811 */
+R_API int r_core_bin_info(RCore *core, int action, int mode, int va, RCoreBinFilter *filter, const char *chksum) {
+	int ret = true;
+	const char *name = NULL;
+	ut64 at = 0, loadaddr = r_bin_get_laddr (core->bin);
+	if (filter && filter->offset) {
+	if (filter && filter->name) {
+
+	// use our internal values for va
+	va = va ? VA_TRUE : VA_FALSE;
+	if ((action & R_CORE_BIN_ACC_STRINGS)) {
+	if ((action & R_CORE_BIN_ACC_RAW_STRINGS)) {
+	if ((action & R_CORE_BIN_ACC_INFO)) {
+	if ((action & R_CORE_BIN_ACC_MAIN)) {
+	if ((action & R_CORE_BIN_ACC_DWARF)) {
+	if ((action & R_CORE_BIN_ACC_PDB)) {
+	if ((action & R_CORE_BIN_ACC_SOURCE)) {
+	if ((action & R_CORE_BIN_ACC_ENTRIES)) {
+	if ((action & R_CORE_BIN_ACC_INITFINI)) {
+	if ((action & R_CORE_BIN_ACC_SECTIONS)) {
+	if ((action & R_CORE_BIN_ACC_SEGMENTS)) {
+	if (r_config_get_i (core->config, "bin.relocs")) {
+		if ((action & R_CORE_BIN_ACC_RELOCS)) {
+	}
+	if ((action & R_CORE_BIN_ACC_LIBS)) {
+	if ((action & R_CORE_BIN_ACC_IMPORTS)) { // 5s
+	if ((action & R_CORE_BIN_ACC_EXPORTS)) {
+		ret &= bin_symbols (core, mode, loadaddr, va, at, name, true, chksum);
+	}
+	if ((action & R_CORE_BIN_ACC_SYMBOLS)) { // 6s
+		ret &= bin_symbols (core, mode, loadaddr, va, at, name, false, chksum);
+
+/* libr/core/cmd_info.c:571 */ 
+static int cmd_info(void *data, const char *input) {
+	RCore *core = (RCore *) data;
+	bool newline = r_cons_is_interactive ();
+	int fd = r_io_fd_get_current (core->io);
+	RIODesc *desc = r_io_desc_get (core->io, fd);
+	int i, va = core->io->va || core->io->debug;
+	int mode = 0; //R_MODE_SIMPLE;
+	bool rdump = false;
+	int is_array = 0;
+	Sdb *db;
+
+	for (i = 0; input[i] && input[i] != ' '; i++)
+		;
+	if (i > 0) {
+		switch (input[i - 1]) {
+		case '*': mode = R_MODE_RADARE; break;
+		case 'j': mode = R_MODE_JSON; break;
+		case 'q': mode = R_MODE_SIMPLE; break;
+		}
+	}
+	if (mode == R_MODE_JSON) {
+		int suffix_shift = 0;
+		if (!strncmp (input, "SS", 2) || !strncmp (input, "ee", 2)
+			|| !strncmp (input, "zz", 2)) {
+			suffix_shift = 1;
+		}
+		if (strlen (input + 1 + suffix_shift) > 1) {
+			is_array = 1;
+		}
+	}
+	if (is_array) {
+		r_cons_printf ("{");
+	}
+	if (!*input) {
+		cmd_info_bin (core, va, mode);
+	}
+	/* i* is an alias for iI* */
+	if (!strcmp (input, "*")) {
+		input = "I*";
+	}
+	char *question = strchr (input, '?');
+	const char *space = strchr (input, ' ');
+	if (!space) {
+		space = question + 1;
+	}
+	if (question < space && question > input) {
+	while (*input) {
+		switch (*input) {
+		case 'o': // "io"
+		{
+			if (!desc) {
+				eprintf ("Core file not open\n");
+				return 0;
+			}
+			const char *fn = input[1] == ' '? input + 2: desc->name;
+			ut64 baddr = r_config_get_i (core->config, "bin.baddr");
+			r_core_bin_load (core, fn, baddr);
+		}
+		break;
+			#define RBININFO(n,x,y,z)\
+				if (is_array) {\
+					if (is_array == 1) { is_array++;\
+					} else { r_cons_printf (",");}\
+					r_cons_printf ("\"%s\":",n);\
+				}\
+				if (z) { playMsg (core, n, z);}\
+				r_core_bin_info (core, x, mode, va, NULL, y);
+
+/* libr/core/cmd_info.c:793 */ 
+static int cmd_info(void *data, const char *input) {
+	RCore *core = (RCore *) data;
+	bool newline = r_cons_is_interactive ();
+	int fd = r_io_fd_get_current (core->io);
+	RIODesc *desc = r_io_desc_get (core->io, fd);
+	int i, va = core->io->va || core->io->debug;
+	int mode = 0; //R_MODE_SIMPLE;
+	bool rdump = false;
+	int is_array = 0;
+	Sdb *db;
+
+	for (i = 0; input[i] && input[i] != ' '; i++)
+		;
+	if (i > 0) {
+		switch (input[i - 1]) {
+		case '*': mode = R_MODE_RADARE; break;
+		case 'j': mode = R_MODE_JSON; break;
+		case 'q': mode = R_MODE_SIMPLE; break;
+		}
+	}
+	if (mode == R_MODE_JSON) {
+		int suffix_shift = 0;
+		if (!strncmp (input, "SS", 2) || !strncmp (input, "ee", 2)
+			|| !strncmp (input, "zz", 2)) {
+			suffix_shift = 1;
+		}
+		if (strlen (input + 1 + suffix_shift) > 1) {
+			is_array = 1;
+		}
+	}
+	if (is_array) {
+		r_cons_printf ("{");
+	}
+	if (!*input) {
+		cmd_info_bin (core, va, mode);
+	}
+	/* i* is an alias for iI* */
+	if (!strcmp (input, "*")) {
+		input = "I*";
+	}
+	char *question = strchr (input, '?');
+	const char *space = strchr (input, ' ');
+	if (!space) {
+		space = question + 1;
+	}
+	if (question < space && question > input) {
+	while (*input) {
+		switch (*input) { // *input = "s*"
+		case 's': { // "is"
+			RBinObject *obj = r_bin_cur_object (core->bin);
+			// Case for isj.
+			if (input[1] == 'j' && input[2] == '.') {
+				mode = R_MODE_JSON;
+				RBININFO ("symbols", R_CORE_BIN_ACC_SYMBOLS, input + 2, (obj && obj->symbols)? r_list_length (obj->symbols): 0);
+			} else if (input[1] == 'q' && input[2] == 'q') {
+				mode = R_MODE_SIMPLEST;
+				RBININFO ("symbols", R_CORE_BIN_ACC_SYMBOLS, input + 1, (obj && obj->symbols)? r_list_length (obj->symbols): 0);
+			} else if (input[1] == 'q' && input[2] == '.') {
+				mode = R_MODE_SIMPLE;
+				RBININFO ("symbols", R_CORE_BIN_ACC_SYMBOLS, input + 2, 0);
+			} else {
+				RBININFO ("symbols", R_CORE_BIN_ACC_SYMBOLS, input + 1, (obj && obj->symbols)? r_list_length (obj->symbols): 0);
+
+/* libr/core/cmd.c:4734 */
+R_API void r_core_cmd_init(RCore *core) {
+	struct {
+		const char *cmd;
+		const char *description;
+		int (*callback)(void *data, const char *input)
+		int (*cb)(void *data, const char *input)
+	} cmds[] = {
+		{"info",     "get file info", cmd_info, cmd_info_init},
+	...
+		for (i = 0; i < R_ARRAY_SIZE (cmds); i++) {
+		r_cmd_add (core->rcmd, cmds[i].cmd, cmds[i].description, cmds[i].cb);
+	}
+
+/* libr/core/cmd_api.c:244 */
+R_API int r_cmd_call(RCmd *cmd, const char *input) {
+	struct r_cmd_item_t *c;
+	int ret = -1;
+	RListIter *iter;
+	RCorePlugin *cp;
+	r_return_val_if_fail (cmd && input, -1);
+	if (!*input) {
+	} else {
+		char *nstr = NULL;
+		const char *ji = r_cmd_alias_get (cmd, input, 1);
+		if (ji) {
+		}
+		r_list_foreach (cmd->plist, iter, cp) {
+		}
+		if (!*input) {
+		}
+		c = cmd->cmds[((ut8)input[0]) & 0xff];
+		if (c && c->callback) {
+			const char *inp = (*input)? input + 1: ""; // *input = "is*", *inp = "s*"
+			ret = c->callback (cmd->data, inp);
+
+/* libr/core/cmd.c:3538 */
+static int r_core_cmd_subst_i(RCore *core, char *cmd, char *colon, bool *tmpseek) {
+	RList *tmpenvs = r_list_newf (tmpenvs_free);
+	const char *quotestr = "`";
+	const char *tick = NULL;
+	char *ptr, *ptr2, *str;
+	char *arroba = NULL;
+	char *grep = NULL;
+	RIODesc *tmpdesc = NULL;
+	int pamode = !core->io->va;
+	int i, ret = 0, pipefd;
+	bool usemyblock = false;
+	int scr_html = -1;
+	int scr_color = -1;
+	bool eos = false;
+	bool haveQuote = false;
+	bool oldfixedarch = core->fixedarch;
+	bool oldfixedbits = core->fixedbits;
+	bool cmd_tmpseek = false;
+	ut64 tmpbsz = core->blocksize;
+	int cmd_ignbithints = -1;
+
+	if (!cmd) {
+		r_list_free (tmpenvs);
+		return 0;
+	}
+	cmd = r_str_trim_head_tail (cmd);
+	...
+	
+fuji:
+	rc = cmd? r_cmd_call (core->rcmd, r_str_trim_head (cmd)): false;
+
+/* libr/core/cmd.c:2418 */
+static int r_core_cmd_subst(RCore *core, char *cmd) {
+	ut64 rep = strtoull (cmd, NULL, 10);
+	int ret = 0, orep;
+	char *cmt, *colon = NULL, *icmd = NULL;
+	bool tmpseek = false;
+	bool original_tmpseek = core->tmpseek;
+
+	if (r_str_startswith (cmd, "GET /cmd/")) {
+		memmove (cmd, cmd + 9, strlen (cmd + 9) + 1);
+		char *http = strstr (cmd, "HTTP");
+		if (http) {
+			*http = 0;
+			http--;
+			if (*http == ' ') {
+				*http = 0;
+			}
+		}
+		r_cons_printf ("HTTP/1.0 %d %s\r\n%s"
+				"Connection: close\r\nContent-Length: %d\r\n\r\n",
+				200, "OK", "", -1);
+		return r_core_cmd0 (core, cmd);
+	}
+
+	/* must store a local orig_offset because there can be
+	* nested call of this function */
+	ut64 orig_offset = core->offset;
+	icmd = strdup (cmd);
+
+	if (core->max_cmd_depth - core->cons->context->cmd_depth == 1) {
+		core->prompt_offset = core->offset;
+	}
+	cmd = r_str_trim_head_tail (icmd);
+	if (*cmd != '"') {
+	} else {
+		colon = NULL;
+	}
+	if (rep > 0) {
+		while (IS_DIGIT (*cmd)) {
+			cmd++;
+		}
+		// do not repeat null cmd
+		if (!*cmd) {
+	}
+	if (rep < 1) {
+		rep = 1;
+	}
+	// XXX if output is a pipe then we don't want to be interactive
+	if (rep > 1 && r_sandbox_enable (0)) {
+	} else {
+	}
+	// TODO: store in core->cmdtimes to speedup ?
+	const char *cmdrep = core->cmdtimes ? core->cmdtimes: "";
+	orep = rep;
+
+	r_cons_break_push (NULL, NULL);
+
+	int ocur_enabled = core->print && core->print->cur_enabled;
+	while (rep-- && *cmd) {
+		if (core->print) {
+			core->print->cur_enabled = false;
+			if (ocur_enabled && core->seltab >= 0) {
+				if (core->seltab == core->curtab) {
+					core->print->cur_enabled = true;
+				}
+			}
+		}
+		if (r_cons_is_breaked ()) {
+		char *cr = strdup (cmdrep);
+		core->break_loop = false;
+		ret = r_core_cmd_subst_i (core, cmd, colon, (rep == orep - 1) ? &tmpseek : NULL);
+
+/* libr/core/cmd.c:4373 */
+R_API int r_core_cmd(RCore *core, const char *cstr, int log) {
+	char *cmd, *ocmd, *ptr, *rcmd;
+	int ret = false, i;
+
+	if (core->cmdfilter) {
+		const char *invalid_chars = ";|>`@";
+		for (i = 0; invalid_chars[i]; i++) {
+			if (strchr (cstr, invalid_chars[i])) {
+		}
+		if (strncmp (cstr, core->cmdfilter, strlen (core->cmdfilter))) {
+	}
+	if (core->cmdremote) {
+		if (*cstr != '=' && *cstr != 'q' && strncmp (cstr, "!=", 2)) {
+	}
+
+	if (!cstr || (*cstr == '|' && cstr[1] != '?')) {
+	if (!strncmp (cstr, "/*", 2)) {
+		if (r_sandbox_enable (0)) {
+		core->incomment = true;
+	} else if (!strncmp (cstr, "*/", 2)) {
+	if (core->incomment) {
+	if (log && (*cstr && (*cstr != '.' || !strncmp (cstr, ".(", 2)))) {
+		free (core->lastcmd);
+		core->lastcmd = strdup (cstr);
+	}
+
+	ocmd = cmd = malloc (strlen (cstr) + 4096);
+	if (!ocmd) {
+	r_str_cpy (cmd, cstr);
+	if (log) {
+		r_line_hist_add (cstr);
+	}
+
+	if (core->cons->context->cmd_depth < 1) {
+	core->cons->context->cmd_depth--;
+	for (rcmd = cmd;;) {
+		ptr = strchr (rcmd, '\n');
+		if (ptr) {
+			*ptr = '\0';
+		}
+		ret = r_core_cmd_subst (core, rcmd);
+
+
+/* libr/core/cmd.c:4623 */
+/* return: pointer to a buffer with the output of the command */
+R_API char *r_core_cmd_str(RCore *core, const char *cmd) {
+	const char *static_str;
+	char *retstr = NULL;
+	r_cons_push ();
+	if (r_core_cmd (core, cmd, 0) == -1) {
+
+// is*
+/* libr/core/cmd.c:1231 */
+static int cmd_interpret(void *data, const char *input) {
+	char *str, *ptr, *eol, *rbuf, *filter, *inp;
+	const char *host, *port, *cmd;
+	RCore *core = (RCore *)data;
+
+	switch (*input) {
+	default:
+		if (*input >= 0 && *input <= 9) {
+			eprintf ("|ERROR| No .[0..9] to avoid infinite loops\n");
+			break;
+		}
+		inp = strdup (input);
+		filter = strchr (inp, '~');
+		if (filter) {
+		int tmp_html = r_cons_singleton ()->is_html;
+		r_cons_singleton ()->is_html = 0;
+		ptr = str = r_core_cmd_str (core, inp); // *inp = "is*"
+		// *(ptr) = "f sym.imp.`!sleep 999` 16 0x0\nf sym.imp.`!sleep 999` 16 0x0\nf sym.imp.`!sleep 999` 16 0x0\n"
+
+		r_cons_singleton ()->is_html = tmp_html;
+
+		if (filter) {
+		r_cons_break_push (NULL, NULL);
+		if (ptr) {
+			for (;;) {
+				if (r_cons_is_breaked ()) {
+					break;
+				}
+				eol = strchr (ptr, '\n');
+				if (eol) {
+					*eol = '\0';
+				}
+				if (*ptr) {
+					// *(ptr) = "f sym.imp.`!sleep 999` 16 0x0\0"
+					char *p = r_str_append (strdup (ptr), filter); 
+					r_core_cmd0 (core, p);
+
+                    
+/* f sym.imp.`!sleep 999` 16 0x0 */
+/* libr/core/cmd.c:4538 */
+R_API int r_core_cmd0(RCore *core, const char *cmd) {
+	return r_core_cmd (core, cmd, 0);
+
+/* libr/core/cmd.c:4373 */
+R_API int r_core_cmd(RCore *core, const char *cstr, int log) {
+	char *cmd, *ocmd, *ptr, *rcmd;
+	int ret = false, i;
+
+	if (core->cmdfilter) {
+		const char *invalid_chars = ";|>`@";
+		for (i = 0; invalid_chars[i]; i++) {
+			if (strchr (cstr, invalid_chars[i])) {
+		}
+		if (strncmp (cstr, core->cmdfilter, strlen (core->cmdfilter))) {
+	}
+	if (core->cmdremote) {
+		if (*cstr != '=' && *cstr != 'q' && strncmp (cstr, "!=", 2)) {
+	}
+
+	if (!cstr || (*cstr == '|' && cstr[1] != '?')) {
+	if (!strncmp (cstr, "/*", 2)) {
+		if (r_sandbox_enable (0)) {
+		}
+		core->incomment = true;
+	} else if (!strncmp (cstr, "*/", 2)) {
+	}
+	if (core->incomment) {
+	}
+	if (log && (*cstr && (*cstr != '.' || !strncmp (cstr, ".(", 2)))) {
+		free (core->lastcmd);
+		core->lastcmd = strdup (cstr);
+	}
+
+	ocmd = cmd = malloc (strlen (cstr) + 4096);
+	if (!ocmd) {
+	r_str_cpy (cmd, cstr);
+	if (log) {
+
+	if (core->cons->context->cmd_depth < 1) {
+	core->cons->context->cmd_depth--;
+	for (rcmd = cmd;;) {
+		ptr = strchr (rcmd, '\n'); 
+		if (ptr) {
+			*ptr = '\0';
+		}
+		ret = r_core_cmd_subst (core, rcmd);
+    
+/* libr/core/cmd.c:2418 */
+static int r_core_cmd_subst(RCore *core, char *cmd) {
+	ut64 rep = strtoull (cmd, NULL, 10);
+	int ret = 0, orep;
+	char *cmt, *colon = NULL, *icmd = NULL;
+	bool tmpseek = false;
+	bool original_tmpseek = core->tmpseek;
+
+	if (r_str_startswith (cmd, "GET /cmd/")) {
+		memmove (cmd, cmd + 9, strlen (cmd + 9) + 1);
+		char *http = strstr (cmd, "HTTP");
+		if (http) {
+			*http = 0;
+			http--;
+			if (*http == ' ') {
+				*http = 0;
+			}
+		}
+		r_cons_printf ("HTTP/1.0 %d %s\r\n%s"
+				"Connection: close\r\nContent-Length: %d\r\n\r\n",
+				200, "OK", "", -1);
+		return r_core_cmd0 (core, cmd);
+	}
+
+	/* must store a local orig_offset because there can be
+	 * nested call of this function */
+	ut64 orig_offset = core->offset;
+	icmd = strdup (cmd);
+
+	if (core->max_cmd_depth - core->cons->context->cmd_depth == 1) {
+		core->prompt_offset = core->offset;
+	}
+	cmd = r_str_trim_head_tail (icmd);
+	if (*cmd != '"') {
+	} else {
+		colon = NULL;
+	}
+	if (rep > 0) {
+		while (IS_DIGIT (*cmd)) {
+			cmd++;
+		}
+		// do not repeat null cmd
+		if (!*cmd) {
+	}
+	if (rep < 1) {
+		rep = 1;
+	}
+	// XXX if output is a pipe then we don't want to be interactive
+	if (rep > 1 && r_sandbox_enable (0)) {
+	} else {
+	}
+	// TODO: store in core->cmdtimes to speedup ?
+	const char *cmdrep = core->cmdtimes ? core->cmdtimes: "";
+	orep = rep;
+
+	r_cons_break_push (NULL, NULL);
+
+	int ocur_enabled = core->print && core->print->cur_enabled;
+	while (rep-- && *cmd) {
+		if (core->print) {
+			core->print->cur_enabled = false;
+			if (ocur_enabled && core->seltab >= 0) {
+				if (core->seltab == core->curtab) {
+					core->print->cur_enabled = true;
+				}
+			}
+		}
+		if (r_cons_is_breaked ()) {
+		char *cr = strdup (cmdrep);
+		core->break_loop = false;
+		ret = r_core_cmd_subst_i (core, cmd, colon, (rep == orep - 1) ? &tmpseek : NULL);
+
+/* libr/core/cmd.c:3017 */
+static int r_core_cmd_subst_i(RCore *core, char *cmd, char *colon, bool *tmpseek) {
+	RList *tmpenvs = r_list_newf (tmpenvs_free);
+	const char *quotestr = "`";
+	const char *tick = NULL;
+	char *ptr, *ptr2, *str;
+	char *arroba = NULL;
+	char *grep = NULL;
+	RIODesc *tmpdesc = NULL;
+	int pamode = !core->io->va;
+	int i, ret = 0, pipefd;
+	bool usemyblock = false;
+	int scr_html = -1;
+	int scr_color = -1;
+	bool eos = false;
+	bool haveQuote = false;
+	bool oldfixedarch = core->fixedarch;
+	bool oldfixedbits = core->fixedbits;
+	bool cmd_tmpseek = false;
+	ut64 tmpbsz = core->blocksize;
+	int cmd_ignbithints = -1;
+
+	if (!cmd) {
+		r_list_free (tmpenvs);
+		return 0;
+	}
+	cmd = r_str_trim_head_tail (cmd);
+escape_redir:
+next2:
+	/* sub commands */
+	ptr = strchr (cmd, '`'); // *(ptr) = '`!sleep 999` 16 0x0', ptr는 실행할 명령어, *(cmd) = "f sym.imp.`!sleep 999` 16 0x0"
+	if (ptr) {
+		if (ptr > cmd) {
+		bool empty = false;
+		int oneline = 1;
+		if (ptr[1] == '`') {
+		ptr2 = strchr (ptr + 1, '`');
+		if (empty) {
+			/* do nothing */
+		} else if (!ptr2) {
+		} else {
+			int value = core->num->value;
+			*ptr = '\0';
+			*ptr2 = '\0';
+			if (ptr[1] == '!') { 
+				str = r_core_cmd_str_pipe (core, ptr + 1); 
+				// *(ptr + 1) = '!sleep 999', ptr는 실행할 명령어
+
+/* libr/core/cmd.c:4585 */
+R_API char *r_core_cmd_str_pipe(RCore *core, const char *cmd) {
+	char *s, *tmp = NULL;
+	if (r_sandbox_enable (0)) {
+		char *p = (*cmd != '"')? strchr (cmd, '|'): NULL;
+		if (p) {
+		}
+		return r_core_cmd_str (core, cmd);
+	}
+	r_cons_reset ();
+	r_sandbox_disable (1);
+	if (r_file_mkstemp ("cmd", &tmp) != -1) {
+		int pipefd = r_cons_pipe_open (tmp, 1, 0);
+		if (pipefd == -1) {
+		char *_cmd = strdup (cmd);
+		r_core_cmd_subst (core, _cmd);
+
+/* libr/core/cmd.c:2418 */
+static int r_core_cmd_subst(RCore *core, char *cmd) {
+	ut64 rep = strtoull (cmd, NULL, 10);
+	int ret = 0, orep;
+	char *cmt, *colon = NULL, *icmd = NULL;
+	bool tmpseek = false;
+	bool original_tmpseek = core->tmpseek;
+
+	if (r_str_startswith (cmd, "GET /cmd/")) {
+		memmove (cmd, cmd + 9, strlen (cmd + 9) + 1);
+		char *http = strstr (cmd, "HTTP");
+		if (http) {
+			*http = 0;
+			http--;
+			if (*http == ' ') {
+				*http = 0;
+			}
+		}
+		r_cons_printf ("HTTP/1.0 %d %s\r\n%s"
+				"Connection: close\r\nContent-Length: %d\r\n\r\n",
+				200, "OK", "", -1);
+		return r_core_cmd0 (core, cmd);
+	}
+
+	/* must store a local orig_offset because there can be
+	 * nested call of this function */
+	ut64 orig_offset = core->offset;
+	icmd = strdup (cmd);
+
+	if (core->max_cmd_depth - core->cons->context->cmd_depth == 1) {
+		core->prompt_offset = core->offset;
+	}
+	cmd = r_str_trim_head_tail (icmd);
+	if (*cmd != '"') {
+	} else {
+		colon = NULL;
+	}
+	if (rep > 0) {
+		while (IS_DIGIT (*cmd)) {
+			cmd++;
+		}
+		// do not repeat null cmd
+		if (!*cmd) {
+	}
+	if (rep < 1) {
+		rep = 1;
+	}
+	// XXX if output is a pipe then we don't want to be interactive
+	if (rep > 1 && r_sandbox_enable (0)) {
+	} else {
+	}
+	// TODO: store in core->cmdtimes to speedup ?
+	const char *cmdrep = core->cmdtimes ? core->cmdtimes: "";
+	orep = rep;
+
+	r_cons_break_push (NULL, NULL);
+
+	int ocur_enabled = core->print && core->print->cur_enabled;
+	while (rep-- && *cmd) {
+		if (core->print) {
+			core->print->cur_enabled = false;
+			if (ocur_enabled && core->seltab >= 0) {
+				if (core->seltab == core->curtab) {
+					core->print->cur_enabled = true;
+				}
+			}
+		}
+		if (r_cons_is_breaked ()) {
+		char *cr = strdup (cmdrep);
+		core->break_loop = false;
+		ret = r_core_cmd_subst_i (core, cmd, colon, (rep == orep - 1) ? &tmpseek : NULL);
+
+/* libr/core/cmd.c:3538 */
+static int r_core_cmd_subst_i(RCore *core, char *cmd, char *colon, bool *tmpseek) {
+	RList *tmpenvs = r_list_newf (tmpenvs_free);
+	const char *quotestr = "`";
+	const char *tick = NULL;
+	char *ptr, *ptr2, *str;
+	char *arroba = NULL;
+	char *grep = NULL;
+	RIODesc *tmpdesc = NULL;
+	int pamode = !core->io->va;
+	int i, ret = 0, pipefd;
+	bool usemyblock = false;
+	int scr_html = -1;
+	int scr_color = -1;
+	bool eos = false;
+	bool haveQuote = false;
+	bool oldfixedarch = core->fixedarch;
+	bool oldfixedbits = core->fixedbits;
+	bool cmd_tmpseek = false;
+	ut64 tmpbsz = core->blocksize;
+	int cmd_ignbithints = -1;
+
+	if (!cmd) {
+		r_list_free (tmpenvs);
+		return 0;
+	}
+	cmd = r_str_trim_head_tail (cmd);
+    ...
+	
+fuji:
+	rc = cmd? r_cmd_call (core->rcmd, r_str_trim_head (cmd)): false;
+
+
+/* libr/core/cmd_api.c:244 */
+R_API int r_cmd_call(RCmd *cmd, const char *input) {
+	struct r_cmd_item_t *c;
+	int ret = -1;
+	RListIter *iter;
+	RCorePlugin *cp;
+	r_return_val_if_fail (cmd && input, -1);
+	if (!*input) {
+	} else {
+		char *nstr = NULL;
+		const char *ji = r_cmd_alias_get (cmd, input, 1);
+		if (ji) {
+		}
+		r_list_foreach (cmd->plist, iter, cp) {
+		}
+		if (!*input) {
+		}
+		c = cmd->cmds[((ut8)input[0]) & 0xff];
+		if (c && c->callback) {
+			const char *inp = (*input)? input + 1: ""; 
+			// input = '!sleep 999'
+			// *(input+1) = sleep 999
+			ret = c->callback (cmd->data, inp);
+
+/*
+	libr/core/cmd_api.c:199
+	R_API int r_cmd_add(RCmd *c, const char *cmd, const char *desc, r_cmd_callback(cb)) {
+		int idx = (ut8)cmd[0];
+		RCmdItem *item = c->cmds[idx];
+		if (!item) {
+			item = R_NEW0 (RCmdItem);
+			c->cmds[idx] = item;
+		}
+		strncpy (item->cmd, cmd, sizeof (item->cmd)-1);
+		strncpy (item->desc, desc, sizeof (item->desc)-1);
+		item->callback = cb;
+*/
+
+/* libr/core/cmd.c:4734 */
+R_API void r_core_cmd_init(RCore *core) {
+	struct {
+		const char *cmd;
+		const char *description;
+		int (*callback)(void *data, const char *input)
+		int (*cb)(void *data, const char *input)
+	} cmds[] = {
+		{"!",        "run system command", cmd_system},
+    ...
+    	for (i = 0; i < R_ARRAY_SIZE (cmds); i++) {
+		r_cmd_add (core->rcmd, cmds[i].cmd, cmds[i].description, cmds[i].cb);
+	}
+
+/* libr/core/cmd.c:2086 */
+static int cmd_system(void *data, const char *input) {
+	RCore *core = (RCore*)data;
+	ut64 n;
+	int ret = 0;
+	switch (*input) {
+	default:
+		n = atoi (input);
+		if (*input == '0' || n > 0) {
+		} else {
+			char *cmd = r_core_sysenv_begin (core, input);
+			if (cmd) {
+				void *bed = r_cons_sleep_begin ();
+				ret = r_sys_cmd (cmd);
+
+/* libr/util/sys.c:799 */
+R_API int r_sys_cmd(const char *str) {
+	if (r_sandbox_enable (0)) {
+		return false;
+	}
+	return r_sandbox_system (str, 1);
+
+/* libr/util/sandbox.c:185 */
+R_API int r_sandbox_system (const char *x, int n) {
+	if (enabled) {
+		eprintf ("sandbox: system call disabled\n");
+		return -1;
+	}
+#if LIBC_HAVE_FORK
+#if LIBC_HAVE_SYSTEM
+	if (n) {
+		return system (x);
+
+
+// x = 'sleep 999', x는 실행할 명령어
 ```
 </details>
 
