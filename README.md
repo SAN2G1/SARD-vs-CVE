@@ -35,10 +35,8 @@ if (!socket->code(name)) {
     sprintf (name, (char*)(pColon+sizeof(char)));
 ```
 
-이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
-
 <details>
-<summary>이상적인 슬라이스 보기</summary>
+<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
 
 ```c
 /* src/condorr_credd/credd.cpp:266 */
@@ -78,11 +76,11 @@ static void zend_throw_or_error(int fetch_type, zend_class_entry *exception_ce, 
 		zend_throw_error(exception_ce, message);
 }
 ```
-이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
+
 
 
 <details>
-<summary>이상적인 슬라이스 보기</summary>
+<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
 
 ```c
 // Zend/zend_execute_API.c:1368
@@ -332,10 +330,8 @@ static rsRetVal initZMQ(instanceData* pData) {
         if(-1 == zsocket_bind(pData->socket, (char*)pData->description)) {
         // CZMQ_EXPORT int zsocket_bind(void *self, const char *format, ...); @czmq.h
 ```
-이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
-
 <details>
-<summary>이상적인 슬라이스 보기</summary>
+<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
 
 ```c
 /* rsyslogd.c:1407 */
@@ -770,10 +766,8 @@ static zend_bool add_post_var(zval *arr, post_var_data_t *var, zend_bool eof TSR
 	if (var->ptr >= var->end) {
 	vsep = memchr(var->ptr, '&', var->end - var->ptr);
 ```
-이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
-
 <details>
-<summary>이상적인 슬라이스 보기</summary>
+<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
 
 ```c
 /* main/php_variables.c:335 */
@@ -910,10 +904,8 @@ OPJ_BOOL opj_t1_encode_cblks(opj_t1_t *t1,
                     for (cblkno = 0; cblkno < prc->cw * prc->ch; ++cblkno) {
 ```
 
-이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
-
 <details>
-<summary>이상적인 슬라이스 보기</summary>
+<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
 
 ```c
 /* src/bin/jp2/opj_compress.c:2016 */
@@ -1593,10 +1585,8 @@ OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)
 샘플 코드
 ```
 
-이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
-
 <details>
-<summary>이상적인 슬라이스 보기</summary>
+<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
 
 ```c
 
@@ -1619,10 +1609,8 @@ OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)
 샘플 코드
 ```
 
-이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
-
 <details>
-<summary>이상적인 슬라이스 보기</summary>
+<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
 
 ```c
 
@@ -1677,10 +1665,8 @@ void vdagent_file_xfers_data(struct vdagent_file_xfers *xfers,
                     status = system(buf);
 ```
 
-이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
-
 <details>
-<summary>이상적인 슬라이스 보기</summary>
+<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
 
 ```c
 /* src/vdagent/vdagent.c:354 */
@@ -1784,10 +1770,8 @@ add_server(struct manager_ctx *manager, struct server *server)
     if (system(cmd) == -1) {
 ```
 
-이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
-
 <details>
-<summary>이상적인 슬라이스 보기</summary>
+<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
 
 ```c
 /* src/manager.c:1187 */
@@ -1900,10 +1884,8 @@ void DelayedExecutor::delayedExecute(const QString &udi)
     KRun::runCommand(exec, QString(), m_service.icon(), 0);
 ```
 
-이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
-
 <details>
-<summary>이상적인 슬라이스 보기</summary>
+<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
 
 ```c
 /* userDefinedServices는 KDesktopFileActions의 메소드인데 이는 외부 라이브러리에 있는 클래스이고, 파일에서 불러오는 것! 
@@ -2037,10 +2019,8 @@ pipe_fopen(gx_io_device * iodev, const char *fname, const char *access,
     *pfile = popen((char *)fname, (char *)access);
 ```
 
-이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
-
 <details>
-<summary>이상적인 슬라이스 보기</summary>
+<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
 
 ```c
 /*
@@ -2290,10 +2270,8 @@ do_ed_script (char const *inname, char const *outname,
 	    execl ("/bin/sh", "sh", "-c", buf, (char *) 0);
 ```
 
-이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
-
 <details>
-<summary>이상적인 슬라이스 보기</summary>
+<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
 
 ```c
 /* 포인터 분석을 잘해야 함. make_tempfile()에서 TMPOUTNAME이 outname으로부터 업데이트 된 다는 사실을 interprocedure analysis로는 식별할 수 없다. */
@@ -2996,10 +2974,8 @@ next2:
 				// !로 시작하면 내부적으로 bash command로서 실행.
 ```
 
-이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
-
 <details>
-<summary>이상적인 슬라이스 보기</summary>
+<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
 
 ```c
 /* cbin.c:2043 */
