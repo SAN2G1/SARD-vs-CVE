@@ -312,13 +312,19 @@ Source와 Sink에는 여러 개의 후보가 있을 수 있다.
 내부 시스템 로그를 외부 로그 서버로 전송하는 rsyslog에서 ZeroMQ 연결 시, 외부에서 설정된 메시지 큐 연결 정보가 그대로 포맷 문자열로 사용되어 발생한 **포맷 스트링 취약점**
 
 1. rsyslogd가 시작될 때 외부 로그 서버 연결 정보가 저장된 설정 파일을 읽고,
+
+	
+	<details>
+	<summary><strong>설정 파일 </strong></summary>
+	description에 %n을 넣으면 format string bug 발생 !
+
+
     ```conf
-    # 출처: https://www.rsyslog.com/quick-guide-to-omzmq3
-    # description에 %n을 넣으면 format string bug 발생 !
-
     *.* action(type="omzmq3" sockType="PUB" action="BIND" description="tcp://*:11514" template="any_message_template")
-
     ```
+	
+	출처: https://www.rsyslog.com/quick-guide-to-omzmq3
+	</details>
 2. newActInst 모듈 함수를 호출해서 pData의 description 관련 필드에 포맷 에러와 관련된 악성 스트링을 설정하고 해당 모듈을 위한 액션 큐와 워커 생성
 3. zmq 관련 메시지가 수신되어 처리될 때, doAction 모듈 함수나, tryResume 모듈 함수가 호출
 4. socket 통신이 처음이면 초기화를 하는데,
@@ -858,6 +864,9 @@ static zend_bool add_post_var(zval *arr, post_var_data_t *var, zend_bool eof TSR
 
 </details>
 
+<details>
+<summary><h4 style="display:inline-block">SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유</h4></summary>
+
 #### 템플릿: 비정형적 Sink
 SARD의 strcpy 같은 명백한 위험 함수와 달리, CVE의 Sink는 평소에 안전한 memchr 함수입니다. 분석기는 단순히 함수 호출을 넘어, '반복문 내에서 비정상적으로 사용되는 패턴' 자체를 이해해야만 자원 고갈(DoS) 취약점으로 인지할 수 있습니다.
 
@@ -866,6 +875,7 @@ SARD는 보통 단일 행위로 문제가 발생하지만, CVE는 여러 번의 
 
 #### 템플릿: 복잡한 함수 간 루프 구조
 이 CVE는 외부 함수의 루프가 내부 함수의 논리적 버그를 반복적으로 트리거하는 구조입니다. 각 함수를 독립적으로 분석해서는 찾을 수 없고, 여러 함수에 걸친 루프의 상호작용까지 분석해야 하므로 탐지 난이도가 매우 높습니다.
+</details>
 
 ### CVE-2019-12973
 OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
