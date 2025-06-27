@@ -53,7 +53,7 @@ if (!socket->code(name)) {
 </details>
 
 <details>
-<summary><h4 style="display:inline-block">SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유</h2></summary>
+<summary><h4 style="display:inline-block">SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유</h4></summary>
 
 Joern이 취약점 sink인 sprintf를 노드로 인식하지 못해 슬라이스가 생성되지 않아 취약점 예측이 불가능
 </details>
@@ -279,7 +279,7 @@ static void xbuf_format_converter(void *xbuf, zend_bool is_char, const char *fmt
 </details>
 
 <details>
-<summary><h4 style="display:inline-block">SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유</h2></summary>
+<summary><h4 style="display:inline-block">SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유</h4></summary>
 
 ##### 불충분한 슬라이싱 범위
 프로그램 슬라이싱은 취약한 코드의 source에서 sink까지의 코드 조각을 추출하는 기술이다.
@@ -291,7 +291,7 @@ SARD 데이터셋은 source와 sink가 같은 함수에 있어 단일 함수 슬
 이로 인해 단일 함수 슬라이싱 만으로는 CVE 취약점을 예측할 수 없다.
 </details>
 
-<summary><h4 style="display:inline-block">그 외 불분명한 슬라이싱 범위 문제</h2></summary>
+<summary><h4 style="display:inline-block">그 외 불분명한 슬라이싱 범위 문제</h4></summary>
 Source와 Sink에는 여러 개의 후보가 있을 수 있다.
 
 이로 인해 CVE 취약점 탐지를 위해 슬라이싱 할 때 어느 수준의 범위로 슬라이싱할지 기준이 모호하다.
@@ -682,7 +682,7 @@ static rsRetVal initZMQ(instanceData* pData) {
 </details>
 
 <details>
-<summary><h4 style="display:inline-block">SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유</h2></summary>
+<summary><h4 style="display:inline-block">SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유</h4></summary>
 
 ##### 설정 파일 파서(Parser) 분석의 한계
 Ksign 슬라이서와 같은 C/C++ 코드 기반 정적 분석 도구는 .l, .y 파일과 연계된 파서의 동작을 해석하지 못하는 한계를 가집니다. 이로 인해, CVE-2017-12588과 같이 외부 설정 파일에서 시작되어 파서의 콜백 함수를 통해 C 코드로 데이터가 유입되는 유형의 취약점은 데이터 흐름의 시작점을 놓치게 되어 탐지하지 못합니다. 이는 SARD 데이터셋처럼 순수 C 코드로만 구성된 환경에서는 드러나지 않는 문제입니다.
@@ -750,13 +750,14 @@ qqueueStart(qqueue_t *pThis) /* this is the ConstructionFinalizer */
 </details>
 
 
-<summary><h4 style="display:inline-block">그 외 CPG(Code Property Graph)로 표현 불가능한 콜백 함수 호출</h2></summary>
+<summary><h4 style="display:inline-block">그 외 CPG(Code Property Graph)로 표현 불가능한 콜백 함수 호출</h4></summary>
 
 이건 SARD도 탐지하지 못하는 사례
 
 **SARD Test Case Flow Variants 44 and 65**
 Data passed as an argument from one function to a function in
 the same source file called via a function pointer
+
 </details>
 
 ## CWE-400: RE(Resource Exhaustion)
