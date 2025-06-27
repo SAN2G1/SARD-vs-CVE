@@ -742,18 +742,816 @@ the same source file called via a function pointer
 
 ### CWE-400: RE(Resource Exhaustion)
 #### CVE-2017-11142
-PHP가 HTTP POST 본문을 파싱할 때 선형 검색 함수인 memchr()를 과도하게 호출해 리소스 고갈 취약점이 발생할 수 있다.
+PHP가 POST 요청을 처리하는 add_post_vars 함수에서, 처리된 데이터의 위치가 올바르게 갱신되지 않아, memchr 함수가 이미 스캔한 데이터를 포함한 전체 버퍼를 반복적으로 재검색하여 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
 
-```c
+1. PHP 엔진이 HTTP POST 요청을 받아 php_std_post_handler 함수를 호출합니다. 이 함수는 while 루프를 돌며 POST 데이터를 청크(chunk) 단위로 읽어 post_data 버퍼에 추가합니다.
+2. php_std_post_handler는 루프를 돌 때마다 add_post_vars 함수를 호출하여 버퍼에 쌓인 데이터의 변수 파싱을 시도합니다.
+3. (버그 발생) 하지만 add_post_vars 함수는 호출될 때마다 처리 위치 포인터(vars->ptr)를 항상 버퍼의 맨 처음(vars->str.c)으로 초기화합니다. 이로 인해 이전에 파싱을 시도했던 부분을 기억하지 못하고, 매번 누적된 데이터 전체를 새로 파싱하게 됩니다.
+4. add_post_vars 내부에서 호출되는 add_post_var 함수는 변수 구분자인 &를 찾기 위해 memchr를 사용합니다. 버그로 인해 memchr는 이전에 이미 & 문자가 없음을 확인했던 영역까지 포함하여, 점점 커지는 전체 버퍼를 처음부터 끝까지 반복적으로 스캔하게 됩니다.
+5. 공격자는 & 문자 없이 매우 큰 단일 변수(예: a=AAAA...)를 전송하여 이 시나리오를 유발합니다. 버퍼가 계속 커지고(8KB, 16KB, 24KB...) memchr의 스캔 범위가 그에 따라 선형적으로 증가하면서, CPU 사용량이 100%에 도달해 서비스가 마비됩니다. 변수가 하나이므로 max_input_vars 제한은 쉽게 우회됩니다.
+
+이 CVE 취약점을 유발하는 코드(sink:php_variables.c:253, memset)는 아래와 같다.
+```
 static zend_bool add_post_var(zval *arr, post_var_data_t *var, zend_bool eof TSRMLS_DC){
 	if (var->ptr >= var->end) {
 	vsep = memchr(var->ptr, '&', var->end - var->ptr);
 ```
-##### O(n) 함수 반복 호출 맥락 표현에 슬라이스만으로는 부족함, 다시 표현 필요
+이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
 
+```c
+/* main/php_variables.c:335 */
+SAPI_API SAPI_POST_HANDLER_FUNC(php_std_post_handler) {
+    zval *arr = (zval *) arg;
+    php_stream *s = SG(request_info).request_body;
+    post_var_data_t post_data;
 
+    if (s && SUCCESS == php_stream_rewind(s)) {
+        memset(&post_data, 0, sizeof(post_data));
+
+        while (!php_stream_eof(s)) {
+            char buf[SAPI_POST_HANDLER_BUFSIZ] = {0};
+            size_t len = php_stream_read(s, buf, SAPI_POST_HANDLER_BUFSIZ);
+
+            if (len && len != (size_t) -1) {
+                smart_str_appendl(&post_data.str, buf, len);
+
+                if (SUCCESS != add_post_vars(arr, &post_data, 0 TSRMLS_CC)) {
+                    if (post_data.str.c) {
+                        efree(post_data.str.c);
+                    }
+                    return;
+                }
+            }
+
+            if (len != SAPI_POST_HANDLER_BUFSIZ) {
+                break;
+            }
+        }
+
+        add_post_vars(arr, &post_data, 1 TSRMLS_CC);
+        if (post_data.str.c) {
+            efree(post_data.str.c);
+        }
+    }
+}
+
+/* main/php_variables.c:298 */
+static inline int add_post_vars(zval *arr, post_var_data_t *vars, zend_bool eof TSRMLS_DC) {
+    uint64_t max_vars = PG(max_input_vars);
+
+    vars->ptr = vars->str.c;
+    vars->end = vars->str.c + vars->str.len;
+
+    while (add_post_var(arr, vars, eof TSRMLS_CC)) {
+        if (++vars->cnt > max_vars) {
+            php_error_docref(NULL TSRMLS_CC, E_WARNING,
+                "Input variables exceeded %" PRIu64 ". "
+                "To increase the limit change max_input_vars in php.ini.",
+                max_vars);
+            return FAILURE;
+        }
+    }
+
+    if (!eof) {
+        memmove(vars->str.c, vars->ptr, vars->str.len = vars->end - vars->ptr);
+    }
+    return SUCCESS;
+}
+
+/* main/php_variables.c:253 */
+static zend_bool add_post_var(zval *arr, post_var_data_t *var, zend_bool eof TSRMLS_DC) {
+    char *ksep, *vsep, *val;
+
+    if (var->ptr >= var->end) {
+        vsep = memchr(var->ptr, '&', var->end - var->ptr);
+        if (!vsep) {
+            if (!eof) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+```
+##### 템플릿: 비정형적 Sink
+SARD의 strcpy 같은 명백한 위험 함수와 달리, CVE의 Sink는 평소에 안전한 memchr 함수입니다. 분석기는 단순히 함수 호출을 넘어, '반복문 내에서 비정상적으로 사용되는 패턴' 자체를 이해해야만 자원 고갈(DoS) 취약점으로 인지할 수 있습니다.
+
+##### 템플릿: 상태 기반 버그
+SARD는 보통 단일 행위로 문제가 발생하지만, CVE는 여러 번의 루프를 거치며 데이터 구조체의 상태가 계속 변하고 누적되어야 버그가 발생합니다. 분석기는 이처럼 시간에 따른 상태 변화를 추적해야 하는 어려움이 있습니다.
+
+##### 템플릿: 복잡한 함수 간 루프 구조
+이 CVE는 외부 함수의 루프가 내부 함수의 논리적 버그를 반복적으로 트리거하는 구조입니다. 각 함수를 독립적으로 분석해서는 찾을 수 없고, 여러 함수에 걸친 루프의 상호작용까지 분석해야 하므로 탐지 난이도가 매우 높습니다.
 
 #### CVE-2019-12973
+OpenJPEG의 이미지 변환 기능에서, 조작된 BMP 파일의 너비(width)와 높이(height) 값으로 인해 JPEG2000 인코딩 과정 중 비정상적으로 큰 반복문을 수행하게 되어 CPU 자원을 고갈시키는 서비스 거부(DoS) 취약점
+
+1.  사용자가 OpenJPEG의 이미지 변환 유틸리티(`convertbmp.c`)를 사용하여 특수하게 조작된 BMP 이미지 파일을 JPEG2000 형식으로 변환을 시도합니다.
+2.  변환기는 BMP 파일의 헤더를 읽어 이미지의 너비(width)와 높이(height) 값을 가져옵니다. 공격자는 이 필드에 비정상적으로 매우 큰 값을 설정해 둡니다.
+3.  변환기는 읽어들인 너비와 높이 값에 대한 유효성을 제대로 검증하지 않은 채, 이 값을 JPEG2000 인코딩 라이브러리 함수(`opj_t1_encode_cblks` 등)에 전달하여 인코딩 파라미터를 설정합니다.
+4.  `opj_t1_encode_cblks` 함수 내의 깊은 중첩 반복문에서, 조작된 너비/높이 값으로부터 계산된 precinct의 너비(`prc->cw`)와 높이(`prc->ch`)가 루프의 종료 조건으로 사용됩니다.
+5.  `prc->cw * prc->ch`의 결과가 수십억에 달하는 매우 큰 값이 되어, `for (cblkno = 0; cblkno < prc->cw * prc->ch; ++cblkno)` 루프가 사실상 무한히 반복됩니다. 이로 인해 CPU 사용량이 100%에 도달하여 시스템이 응답 불능 상태에 빠집니다.
+
+이 CVE 취약점을 유발하는 코드(sink:src/lib/openjp2/t1.c:2137, `for (cblkno = 0; cblkno < prc->cw * prc->ch; ++cblkno)`)는 아래와 같다.
+`prc->cw`와 `prc->ch`는 `uint32_t` 타입이므로, `prc->cw * prc->ch`의 결과도 최대 4,294,967,295까지 커질 수 있어, 이만큼 반복이 발생할 수 있다.
+
+```c
+OPJ_BOOL opj_t1_encode_cblks(opj_t1_t *t1,
+                             opj_tcd_tile_t *tile,
+                             opj_tcp_t *tcp,
+                             const OPJ_FLOAT64 * mct_norms,
+                             OPJ_UINT32 mct_numcomps
+                            )
+{
+    OPJ_UINT32 compno, resno, bandno, precno, cblkno;
+
+    tile->distotile = 0;        /* fixed_quality */
+
+    for (compno = 0; compno < tile->numcomps; ++compno) {
+        opj_tcd_tilecomp_t* tilec = &tile->comps[compno];
+        opj_tccp_t* tccp = &tcp->tccps[compno];
+        OPJ_UINT32 tile_w = (OPJ_UINT32)(tilec->x1 - tilec->x0);
+
+        for (resno = 0; resno < tilec->numresolutions; ++resno) {
+            opj_tcd_resolution_t *res = &tilec->resolutions[resno];
+
+            for (bandno = 0; bandno < res->numbands; ++bandno) {
+                opj_tcd_band_t* OPJ_RESTRICT band = &res->bands[bandno];
+                OPJ_INT32 bandconst;
+
+                /* Skip empty bands */
+                if (opj_tcd_is_band_empty(band)) {
+                    continue;
+                }
+
+                bandconst = 8192 * 8192 / ((OPJ_INT32) floor(band->stepsize * 8192));
+                for (precno = 0; precno < res->pw * res->ph; ++precno) {
+                    opj_tcd_precinct_t *prc = &band->precincts[precno];
+
+                    for (cblkno = 0; cblkno < prc->cw * prc->ch; ++cblkno) {
+```
+
+이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.
+
+```c
+/* src/bin/jp2/opj_compress.c:2016 */
+int main(int argc, char **argv)
+{
+
+    opj_cparameters_t parameters;   /* compression parameters */
+
+    opj_stream_t *l_stream = 00;
+    opj_codec_t* l_codec = 00;
+    opj_image_t *image = NULL;
+    raw_cparameters_t raw_cp;
+    OPJ_SIZE_T num_compressed_files = 0;
+
+    char indexfilename[OPJ_PATH_LEN];   /* index file name */
+
+    unsigned int i, num_images, imageno;
+    img_fol_t img_fol;
+    dircnt_t *dirptr = NULL;
+
+    int ret = 0;
+
+    OPJ_BOOL bSuccess;
+    OPJ_BOOL bUseTiles = OPJ_FALSE; /* OPJ_TRUE */
+    OPJ_UINT32 l_nb_tiles = 4;
+    OPJ_FLOAT64 t = opj_clock();
+
+    /* set encoding parameters to default values */
+    opj_set_default_encoder_parameters(&parameters);
+
+    /* Initialize indexfilename and img_fol */
+    *indexfilename = 0;
+    memset(&img_fol, 0, sizeof(img_fol_t));
+
+    /* raw_cp initialization */
+    raw_cp.rawBitDepth = 0;
+    raw_cp.rawComp = 0;
+    raw_cp.rawComps = 0;
+    raw_cp.rawHeight = 0;
+    raw_cp.rawSigned = 0;
+    raw_cp.rawWidth = 0;
+
+    /* parse input and get user encoding parameters */
+    parameters.tcp_mct = (char)
+                         255; /* This will be set later according to the input image or the provided option */
+    if (parse_cmdline_encoder(argc, argv, &parameters, &img_fol, &raw_cp,
+                              indexfilename, sizeof(indexfilename)) == 1) {
+
+    /* Read directory if necessary */
+    if (img_fol.set_imgdir == 1) {
+        num_images = get_num_images(img_fol.imgdirpath);
+        dirptr = (dircnt_t*)malloc(sizeof(dircnt_t));
+        if (dirptr) {
+            dirptr->filename_buf = (char*)malloc(num_images * OPJ_PATH_LEN * sizeof(
+                    char)); /* Stores at max 10 image file names*/
+            dirptr->filename = (char**) malloc(num_images * sizeof(char*));
+            if (!dirptr->filename_buf) {
+            for (i = 0; i < num_images; i++) {
+                dirptr->filename[i] = dirptr->filename_buf + i * OPJ_PATH_LEN;
+            }
+        }
+        if (load_images(dirptr, img_fol.imgdirpath) == 1) {
+        if (num_images == 0) {
+    } else {
+        num_images = 1;
+    }
+    /*Encoding image one by one*/
+    for (imageno = 0; imageno < num_images; imageno++) {
+        image = NULL;
+        fprintf(stderr, "\n");
+
+        if (img_fol.set_imgdir == 1) {
+            if (get_next_file((int)imageno, dirptr, &img_fol, &parameters)) {
+                fprintf(stderr, "skipping file...\n");
+                continue;
+            }
+        }
+
+        switch (parameters.decod_format) {
+        case PGX_DFMT:
+            break;
+        case PXM_DFMT:
+            break;
+        case BMP_DFMT:
+            break;
+        case TIF_DFMT:
+            break;
+        case RAW_DFMT:
+            break;
+        case RAWL_DFMT:
+            break;
+        case TGA_DFMT:
+            break;
+        case PNG_DFMT:
+            break;
+        default:
+            fprintf(stderr, "skipping file...\n");
+            continue;
+        }
+
+        /* decode the source image */
+        /* ----------------------- */
+
+        switch (parameters.decod_format) {
+        case PGX_DFMT:
+            image = pgxtoimage(parameters.infile, &parameters);
+            if (!image) {
+            break;
+
+        case PXM_DFMT:
+            image = pnmtoimage(parameters.infile, &parameters);
+            if (!image) {
+            break;
+
+        case BMP_DFMT:
+            image = bmptoimage(parameters.infile, &parameters);
+            
+                /* src/lib/openjp2/openjpeg.c:819 */
+                opj_image_t* bmptoimage(const char *filename, opj_cparameters_t *parameters)
+                {
+                    opj_image_cmptparm_t cmptparm[4];   /* maximum of 4 components */
+                    OPJ_UINT8 lut_R[256], lut_G[256], lut_B[256];
+                    OPJ_UINT8 const* pLUT[3];
+                    opj_image_t * image = NULL;
+                    FILE *IN;
+                    OPJ_BITMAPFILEHEADER File_h;
+                    OPJ_BITMAPINFOHEADER Info_h;
+                    OPJ_UINT32 i, palette_len, numcmpts = 1U;
+                    OPJ_BOOL l_result = OPJ_FALSE;
+                    OPJ_UINT8* pData = NULL;
+                    OPJ_UINT32 stride;
+
+                    pLUT[0] = lut_R;
+                    pLUT[1] = lut_G;
+                    pLUT[2] = lut_B;
+
+                    IN = fopen(filename, "rb");
+                    if (!IN) {
+
+                    if (!bmp_read_file_header(IN, &File_h)) {
+                    if (!bmp_read_info_header(IN, &Info_h)) {
+
+                    /* Load palette */
+                    if (Info_h.biBitCount <= 8U) {
+                        memset(&lut_R[0], 0, sizeof(lut_R));
+                        memset(&lut_G[0], 0, sizeof(lut_G));
+                        memset(&lut_B[0], 0, sizeof(lut_B));
+
+                        palette_len = Info_h.biClrUsed;
+                        if ((palette_len == 0U) && (Info_h.biBitCount <= 8U)) {
+                            palette_len = (1U << Info_h.biBitCount);
+                        }
+                        if (palette_len > 256U) {
+                            palette_len = 256U;
+                        }
+                        if (palette_len > 0U) {
+                            OPJ_UINT8 has_color = 0U;
+                            for (i = 0U; i < palette_len; i++) {
+                                lut_B[i] = (OPJ_UINT8)getc(IN);
+                                lut_G[i] = (OPJ_UINT8)getc(IN);
+                                lut_R[i] = (OPJ_UINT8)getc(IN);
+                                (void)getc(IN); /* padding */
+                                has_color |= (lut_B[i] ^ lut_G[i]) | (lut_G[i] ^ lut_R[i]);
+                            }
+                            if (has_color) {
+                                numcmpts = 3U;
+                            }
+                        }
+                    } else {
+                        numcmpts = 3U;
+                        if ((Info_h.biCompression == 3) && (Info_h.biAlphaMask != 0U)) {
+                            numcmpts++;
+                        }
+                    }
+
+                    if (Info_h.biWidth == 0 || Info_h.biHeight == 0) {
+
+                    if (Info_h.biBitCount > (((OPJ_UINT32) - 1) - 31) / Info_h.biWidth) {
+                    stride = ((Info_h.biWidth * Info_h.biBitCount + 31U) / 32U) *
+                            4U; /* rows are aligned on 32bits */
+                    if (Info_h.biBitCount == 4 &&
+                            Info_h.biCompression == 2) { /* RLE 4 gets decoded as 8 bits data for now... */
+                        if (8 > (((OPJ_UINT32) - 1) - 31) / Info_h.biWidth) {
+                        stride = ((Info_h.biWidth * 8U + 31U) / 32U) * 4U;
+                    }
+
+                    if (stride > ((OPJ_UINT32) - 1) / sizeof(OPJ_UINT8) / Info_h.biHeight) {
+                    pData = (OPJ_UINT8 *) calloc(1, sizeof(OPJ_UINT8) * stride * Info_h.biHeight);
+                    if (pData == NULL) {
+                    /* Place the cursor at the beginning of the image information */
+                    fseek(IN, 0, SEEK_SET);
+                    fseek(IN, (long)File_h.bfOffBits, SEEK_SET);
+
+                    switch (Info_h.biCompression) {
+                    case 0:
+                    case 3:
+                        /* read raw data */
+                        l_result = bmp_read_raw_data(IN, pData, stride, Info_h.biWidth,
+                                                    Info_h.biHeight);
+                        break;
+                    case 1:
+                        /* read rle8 data */
+                        l_result = bmp_read_rle8_data(IN, pData, stride, Info_h.biWidth,
+                                                    Info_h.biHeight);
+            if (!image) {
+            break;
+
+#ifdef OPJ_HAVE_LIBTIFF
+        case TIF_DFMT:
+            image = tiftoimage(parameters.infile, &parameters);
+            if (!image) {
+            break;
+#endif /* OPJ_HAVE_LIBTIFF */
+
+        case RAW_DFMT:
+            image = rawtoimage(parameters.infile, &parameters, &raw_cp);
+            if (!image) {
+            break;
+
+        case RAWL_DFMT:
+            image = rawltoimage(parameters.infile, &parameters, &raw_cp);
+            if (!image) {
+            break;
+
+        case TGA_DFMT:
+            image = tgatoimage(parameters.infile, &parameters);
+            if (!image) {
+            break;
+
+#ifdef OPJ_HAVE_LIBPNG
+        case PNG_DFMT:
+            image = pngtoimage(parameters.infile, &parameters);
+            if (!image) {
+            break;
+#endif /* OPJ_HAVE_LIBPNG */
+        }
+
+        /* Can happen if input file is TIFF or PNG
+        * and OPJ_HAVE_LIBTIF or OPJ_HAVE_LIBPNG is undefined
+        */
+        if (!image) {
+
+        /* Decide if MCT should be used */
+        if (parameters.tcp_mct == (char)
+                255) { /* mct mode has not been set in commandline */
+            parameters.tcp_mct = (image->numcomps >= 3) ? 1 : 0;
+        } else {            /* mct mode has been set in commandline */
+            if ((parameters.tcp_mct == 1) && (image->numcomps < 3)) {
+            if ((parameters.tcp_mct == 2) && (!parameters.mct_data)) {
+        }
+
+        /* encode the destination image */
+        /* ---------------------------- */
+
+        switch (parameters.cod_format) {
+        case J2K_CFMT: { /* JPEG-2000 codestream */
+            /* Get a decoder handle */
+            l_codec = opj_create_compress(OPJ_CODEC_J2K);
+            break;
+        }
+
+        /* catch events using our callbacks and give a local context */
+        opj_set_info_handler(l_codec, info_callback, 00);
+        opj_set_warning_handler(l_codec, warning_callback, 00);
+        opj_set_error_handler(l_codec, error_callback, 00);
+
+        if (bUseTiles) {
+            parameters.cp_tx0 = 0;
+            parameters.cp_ty0 = 0;
+            parameters.tile_size_on = OPJ_TRUE;
+            parameters.cp_tdx = 512;
+            parameters.cp_tdy = 512;
+        }
+        if (! opj_setup_encoder(l_codec, &parameters, image)) {
+
+        /* open a byte stream for writing and allocate memory for all tiles */
+        l_stream = opj_stream_create_default_file_stream(parameters.outfile, OPJ_FALSE);
+        if (! l_stream) {
+
+        /* encode the image */
+        bSuccess = opj_start_compress(l_codec, image, l_stream);
+        if (!bSuccess)  {
+            fprintf(stderr, "failed to encode image: opj_start_compress\n");
+        }
+        if (bSuccess && bUseTiles) {
+        } else {
+            bSuccess = bSuccess && opj_encode(l_codec, l_stream);
+
+/* src/lib/openjp2/openjpeg.c:819 */
+OPJ_BOOL OPJ_CALLCONV opj_encode(opj_codec_t *p_info, opj_stream_t *p_stream)
+{
+    if (p_info && p_stream) {
+        opj_codec_private_t * l_codec = (opj_codec_private_t *) p_info;
+        opj_stream_private_t * l_stream = (opj_stream_private_t *) p_stream;
+
+        if (! l_codec->is_decompressor) {
+            return l_codec->m_codec_data.m_compression.opj_encode(l_codec->m_codec,
+                    l_stream,
+                    &(l_codec->m_event_mgr));
+
+/* src/lib/openjp2/openjpeg.c:629 */
+opj_codec_t* OPJ_CALLCONV opj_create_compress(OPJ_CODEC_FORMAT p_format)
+{
+    opj_codec_private_t *l_codec = 00;
+
+    l_codec = (opj_codec_private_t*)opj_calloc(1, sizeof(opj_codec_private_t));
+    if (!l_codec) {
+        return 00;
+    }
+
+    l_codec->is_decompressor = 0;
+
+    switch (p_format) {
+    case OPJ_CODEC_J2K:
+        l_codec->m_codec_data.m_compression.opj_encode = (OPJ_BOOL(*)(void *,
+                struct opj_stream_private *,
+                struct opj_event_mgr *)) opj_j2k_encode;
+
+/* src/lib/openjp2/j2k.c:11279 */
+OPJ_BOOL opj_j2k_encode(opj_j2k_t * p_j2k,
+                        opj_stream_private_t *p_stream,
+                        opj_event_mgr_t * p_manager)
+{
+    OPJ_UINT32 i, j;
+    OPJ_UINT32 l_nb_tiles;
+    OPJ_SIZE_T l_max_tile_size = 0, l_current_tile_size;
+    OPJ_BYTE * l_current_data = 00;
+    OPJ_BOOL l_reuse_data = OPJ_FALSE;
+    opj_tcd_t* p_tcd = 00;
+
+    /* preconditions */
+    assert(p_j2k != 00);
+    assert(p_stream != 00);
+    assert(p_manager != 00);
+
+    p_tcd = p_j2k->m_tcd;
+
+    l_nb_tiles = p_j2k->m_cp.th * p_j2k->m_cp.tw;
+    if (l_nb_tiles == 1) {
+        l_reuse_data = OPJ_TRUE;
+#ifdef __SSE__
+        for (j = 0; j < p_j2k->m_tcd->image->numcomps; ++j) {
+            opj_image_comp_t * l_img_comp = p_tcd->image->comps + j;
+            if (((size_t)l_img_comp->data & 0xFU) !=
+                    0U) { /* tile data shall be aligned on 16 bytes */
+                l_reuse_data = OPJ_FALSE;
+            }
+        }
+#endif
+    }
+    for (i = 0; i < l_nb_tiles; ++i) {
+        if (! opj_j2k_pre_write_tile(p_j2k, i, p_stream, p_manager)) {
+            if (l_current_data) {
+                opj_free(l_current_data);
+            }
+            return OPJ_FALSE;
+        }
+
+        /* if we only have one tile, then simply set tile component data equal to image component data */
+        /* otherwise, allocate the data */
+        for (j = 0; j < p_j2k->m_tcd->image->numcomps; ++j) {
+            opj_tcd_tilecomp_t* l_tilec = p_tcd->tcd_image->tiles->comps + j;
+            if (l_reuse_data) {
+                opj_image_comp_t * l_img_comp = p_tcd->image->comps + j;
+                l_tilec->data  =  l_img_comp->data;
+                l_tilec->ownsData = OPJ_FALSE;
+            } else {
+                if (! opj_alloc_tile_component_data(l_tilec)) {
+                    opj_event_msg(p_manager, EVT_ERROR, "Error allocating tile component data.");
+                    if (l_current_data) {
+                        opj_free(l_current_data);
+                    }
+                    return OPJ_FALSE;
+                }
+            }
+        }
+        l_current_tile_size = opj_tcd_get_encoded_tile_size(p_j2k->m_tcd);
+        if (!l_reuse_data) {
+            if (l_current_tile_size > l_max_tile_size) {
+                OPJ_BYTE *l_new_current_data = (OPJ_BYTE *) opj_realloc(l_current_data,
+                                               l_current_tile_size);
+                if (! l_new_current_data) {
+                    if (l_current_data) {
+                        opj_free(l_current_data);
+                    }
+                    opj_event_msg(p_manager, EVT_ERROR, "Not enough memory to encode all tiles\n");
+                    return OPJ_FALSE;
+                }
+                l_current_data = l_new_current_data;
+                l_max_tile_size = l_current_tile_size;
+            }
+            if (l_current_data == NULL) {
+                /* Should not happen in practice, but will avoid Coverity to */
+                /* complain about a null pointer dereference */
+                assert(0);
+                return OPJ_FALSE;
+            }
+
+            /* copy image data (32 bit) to l_current_data as contiguous, all-component, zero offset buffer */
+            /* 32 bit components @ 8 bit precision get converted to 8 bit */
+            /* 32 bit components @ 16 bit precision get converted to 16 bit */
+            opj_j2k_get_tile_data(p_j2k->m_tcd, l_current_data);
+
+            /* now copy this data into the tile component */
+            if (! opj_tcd_copy_tile_data(p_j2k->m_tcd, l_current_data,
+                                         l_current_tile_size)) {
+                opj_event_msg(p_manager, EVT_ERROR,
+                              "Size mismatch between tile data and sent data.");
+                opj_free(l_current_data);
+                return OPJ_FALSE;
+            }
+        }
+
+        if (! opj_j2k_post_write_tile(p_j2k, p_stream, p_manager)) {
+
+/* src/lib/openjp2/j2k.c:11531 */
+static OPJ_BOOL opj_j2k_post_write_tile(opj_j2k_t * p_j2k,
+                                        opj_stream_private_t *p_stream,
+                                        opj_event_mgr_t * p_manager)
+{
+    OPJ_UINT32 l_nb_bytes_written;
+    OPJ_BYTE * l_current_data = 00;
+    OPJ_UINT32 l_tile_size = 0;
+    OPJ_UINT32 l_available_data;
+
+    /* preconditions */
+    assert(p_j2k->m_specific_param.m_encoder.m_encoded_tile_data);
+
+    l_tile_size = p_j2k->m_specific_param.m_encoder.m_encoded_tile_size;
+    l_available_data = l_tile_size;
+    l_current_data = p_j2k->m_specific_param.m_encoder.m_encoded_tile_data;
+
+    l_nb_bytes_written = 0;
+    if (! opj_j2k_write_first_tile_part(p_j2k, l_current_data, &l_nb_bytes_written,
+                                        l_available_data, p_stream, p_manager)) {
+
+/* src/lib/openjp2/j2k.c:11773 */
+static OPJ_BOOL opj_j2k_write_first_tile_part(opj_j2k_t *p_j2k,
+        OPJ_BYTE * p_data,
+        OPJ_UINT32 * p_data_written,
+        OPJ_UINT32 p_total_data_size,
+        opj_stream_private_t *p_stream,
+        struct opj_event_mgr * p_manager)
+{
+    OPJ_UINT32 l_nb_bytes_written = 0;
+    OPJ_UINT32 l_current_nb_bytes_written;
+    OPJ_BYTE * l_begin_data = 00;
+
+    opj_tcd_t * l_tcd = 00;
+    opj_cp_t * l_cp = 00;
+
+    l_tcd = p_j2k->m_tcd;
+    l_cp = &(p_j2k->m_cp);
+
+    l_tcd->cur_pino = 0;
+
+    /*Get number of tile parts*/
+    p_j2k->m_specific_param.m_encoder.m_current_poc_tile_part_number = 0;
+
+    /* INDEX >> */
+    /* << INDEX */
+
+    l_current_nb_bytes_written = 0;
+    l_begin_data = p_data;
+    if (! opj_j2k_write_sot(p_j2k, p_data, p_total_data_size,
+                            &l_current_nb_bytes_written, p_stream,
+                            p_manager)) {
+        return OPJ_FALSE;
+    }
+
+    l_nb_bytes_written += l_current_nb_bytes_written;
+    p_data += l_current_nb_bytes_written;
+    p_total_data_size -= l_current_nb_bytes_written;
+
+    if (!OPJ_IS_CINEMA(l_cp->rsiz)) {
+        if (l_cp->tcps[p_j2k->m_current_tile_number].numpocs) {
+            l_current_nb_bytes_written = 0;
+            opj_j2k_write_poc_in_memory(p_j2k, p_data, &l_current_nb_bytes_written,
+                                        p_manager);
+            l_nb_bytes_written += l_current_nb_bytes_written;
+            p_data += l_current_nb_bytes_written;
+            p_total_data_size -= l_current_nb_bytes_written;
+        }
+    }
+
+    l_current_nb_bytes_written = 0;
+    if (! opj_j2k_write_sod(p_j2k, l_tcd, p_data, &l_current_nb_bytes_written,
+                            p_total_data_size, p_stream, p_manager)) {
+
+/* src/lib/openjp2/j2k.c:4691 */
+static OPJ_BOOL opj_j2k_write_sod(opj_j2k_t *p_j2k,
+                                  opj_tcd_t * p_tile_coder,
+                                  OPJ_BYTE * p_data,
+                                  OPJ_UINT32 * p_data_written,
+                                  OPJ_UINT32 p_total_data_size,
+                                  const opj_stream_private_t *p_stream,
+                                  opj_event_mgr_t * p_manager
+                                 )
+{
+    opj_codestream_info_t *l_cstr_info = 00;
+    OPJ_UINT32 l_remaining_data;
+
+    /* preconditions */
+    assert(p_j2k != 00);
+    assert(p_manager != 00);
+    assert(p_stream != 00);
+
+    OPJ_UNUSED(p_stream);
+
+    if (p_total_data_size < 4) {
+
+    opj_write_bytes(p_data, J2K_MS_SOD,
+                    2);                                 /* SOD */
+    p_data += 2;
+
+    /* make room for the EOF marker */
+    l_remaining_data =  p_total_data_size - 4;
+
+    /* update tile coder */
+    p_tile_coder->tp_num =
+        p_j2k->m_specific_param.m_encoder.m_current_poc_tile_part_number ;
+    p_tile_coder->cur_tp_num =
+        p_j2k->m_specific_param.m_encoder.m_current_tile_part_number;
+
+    if (p_j2k->m_specific_param.m_encoder.m_current_tile_part_number == 0) {
+        p_tile_coder->tcd_image->tiles->packno = 0;
+#ifdef deadcode
+        if (l_cstr_info) {
+            l_cstr_info->packno = 0;
+        }
+#endif
+    }
+
+    *p_data_written = 0;
+
+    if (! opj_tcd_encode_tile(p_tile_coder, p_j2k->m_current_tile_number, p_data,
+                              p_data_written, l_remaining_data, l_cstr_info,
+                              p_manager))
+
+/* src/lib/openjp2/tcd.c:1414 */
+OPJ_BOOL opj_tcd_encode_tile(opj_tcd_t *p_tcd,
+                             OPJ_UINT32 p_tile_no,
+                             OPJ_BYTE *p_dest,
+                             OPJ_UINT32 * p_data_written,
+                             OPJ_UINT32 p_max_length,
+                             opj_codestream_info_t *p_cstr_info,
+                             opj_event_mgr_t *p_manager)
+{
+
+    if (p_tcd->cur_tp_num == 0) {
+
+        p_tcd->tcd_tileno = p_tile_no;
+        p_tcd->tcp = &p_tcd->cp->tcps[p_tile_no];
+
+        /* INDEX >> "Precinct_nb_X et Precinct_nb_Y" */
+        if (p_cstr_info)  {
+            OPJ_UINT32 l_num_packs = 0;
+            OPJ_UINT32 i;
+            opj_tcd_tilecomp_t *l_tilec_idx =
+                &p_tcd->tcd_image->tiles->comps[0];        /* based on component 0 */
+            opj_tccp_t *l_tccp = p_tcd->tcp->tccps; /* based on component 0 */
+
+            for (i = 0; i < l_tilec_idx->numresolutions; i++) {
+                opj_tcd_resolution_t *l_res_idx = &l_tilec_idx->resolutions[i];
+
+                p_cstr_info->tile[p_tile_no].pw[i] = (int)l_res_idx->pw;
+                p_cstr_info->tile[p_tile_no].ph[i] = (int)l_res_idx->ph;
+
+                l_num_packs += l_res_idx->pw * l_res_idx->ph;
+                p_cstr_info->tile[p_tile_no].pdx[i] = (int)l_tccp->prcw[i];
+                p_cstr_info->tile[p_tile_no].pdy[i] = (int)l_tccp->prch[i];
+            }
+            p_cstr_info->tile[p_tile_no].packet = (opj_packet_info_t*) opj_calloc((
+                    OPJ_SIZE_T)p_cstr_info->numcomps * (OPJ_SIZE_T)p_cstr_info->numlayers *
+                                                  l_num_packs,
+                                                  sizeof(opj_packet_info_t));
+            if (!p_cstr_info->tile[p_tile_no].packet) {
+        }
+        /* << INDEX */
+
+        /* FIXME _ProfStart(PGROUP_DC_SHIFT); */
+        /*---------------TILE-------------------*/
+        if (! opj_tcd_dc_level_shift_encode(p_tcd)) {
+        /* FIXME _ProfStop(PGROUP_DC_SHIFT); */
+
+        /* FIXME _ProfStart(PGROUP_MCT); */
+        if (! opj_tcd_mct_encode(p_tcd)) {
+        /* FIXME _ProfStop(PGROUP_MCT); */
+
+        /* FIXME _ProfStart(PGROUP_DWT); */
+        if (! opj_tcd_dwt_encode(p_tcd)) {
+        /* FIXME  _ProfStop(PGROUP_DWT); */
+
+        /* FIXME  _ProfStart(PGROUP_T1); */
+        if (! opj_tcd_t1_encode(p_tcd)) {
+
+/* src/lib/openjp2/tcd.c:2511 */
+static OPJ_BOOL opj_tcd_t1_encode(opj_tcd_t *p_tcd)
+{
+    opj_t1_t * l_t1;
+    const OPJ_FLOAT64 * l_mct_norms;
+    OPJ_UINT32 l_mct_numcomps = 0U;
+    opj_tcp_t * l_tcp = p_tcd->tcp;
+
+    l_t1 = opj_t1_create(OPJ_TRUE);
+    if (l_t1 == 00) {
+        return OPJ_FALSE;
+    }
+
+    if (l_tcp->mct == 1) {
+        l_mct_numcomps = 3U;
+        /* irreversible encoding */
+        if (l_tcp->tccps->qmfbid == 0) {
+            l_mct_norms = opj_mct_get_mct_norms_real();
+        } else {
+            l_mct_norms = opj_mct_get_mct_norms();
+        }
+    } else {
+        l_mct_numcomps = p_tcd->image->numcomps;
+        l_mct_norms = (const OPJ_FLOAT64 *)(l_tcp->mct_norms);
+    }
+
+    if (! opj_t1_encode_cblks(l_t1, p_tcd->tcd_image->tiles, l_tcp, l_mct_norms,
+                              l_mct_numcomps)) {
+
+/* src/lib/openjp2/t1.c:2137 */
+OPJ_BOOL opj_t1_encode_cblks(opj_t1_t *t1,
+                             opj_tcd_tile_t *tile,
+                             opj_tcp_t *tcp,
+                             const OPJ_FLOAT64 * mct_norms,
+                             OPJ_UINT32 mct_numcomps
+                            )
+{
+    OPJ_UINT32 compno, resno, bandno, precno, cblkno;
+
+    tile->distotile = 0;        /* fixed_quality */
+
+    for (compno = 0; compno < tile->numcomps; ++compno) {
+        opj_tcd_tilecomp_t* tilec = &tile->comps[compno];
+        opj_tccp_t* tccp = &tcp->tccps[compno];
+        OPJ_UINT32 tile_w = (OPJ_UINT32)(tilec->x1 - tilec->x0);
+
+        for (resno = 0; resno < tilec->numresolutions; ++resno) {
+            opj_tcd_resolution_t *res = &tilec->resolutions[resno];
+
+            for (bandno = 0; bandno < res->numbands; ++bandno) {
+                opj_tcd_band_t* OPJ_RESTRICT band = &res->bands[bandno];
+                OPJ_INT32 bandconst;
+
+                /* Skip empty bands */
+                if (opj_tcd_is_band_empty(band)) {
+                    continue;
+                }
+
+                bandconst = 8192 * 8192 / ((OPJ_INT32) floor(band->stepsize * 8192));
+                for (precno = 0; precno < res->pw * res->ph; ++precno) {
+                    opj_tcd_precinct_t *prc = &band->precincts[precno];
+
+                    for (cblkno = 0; cblkno < prc->cw * prc->ch; ++cblkno) {
+```
+
 #### CVE-2018-20784
 #### CVE-2019-17351
 
