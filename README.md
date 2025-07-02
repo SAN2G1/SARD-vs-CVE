@@ -20,7 +20,7 @@ HTCondor의 인증 데몬(credd)에서, 소켓을 통해 수신한 'user:name' �
 
 이 CVE 취약점을 유발하는 코드(src/condorr_credd/credd.cpp:266)는 아래와 같다.
 
-```
+```c
 if (!socket->code(name)) {
     dprintf (D_ALWAYS, "Error receiving credential name\n"); 
     goto EXIT;
@@ -30,21 +30,15 @@ if (!socket->code(name)) {
   dprintf (D_ALWAYS, "Authenticated as %s\n", user);
 
   if (strchr (name, ':')) {
-    // The name is of the form user:name
-    // This better be a super-user!
-    // TODO: Check super-user's list
-
-    // Owner is the first part
     owner = strdup (name);
     char * pColon = strchr (owner, ':');
     *pColon = '\0';
     
-    // Name is the second part
     sprintf (name, (char*)(pColon+sizeof(char)));
 ```
 
 <details>
-<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
+<summary>이 코드의 취약점을 표현하는 슬라이스</summary>
 
 ```c
 /* src/condorr_credd/credd.cpp:266 */
@@ -61,7 +55,9 @@ if (!socket->code(name)) {
 </details>
 
 <details>
-<summary><h4 style="display:inline-block">SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유</h4></summary>
+<summary><h4 style="display:inline-block">위 슬라이스를 추출하는 것에 대한 어려움</h4></summary>
+
+: Joern이 만든 불완전한 PDG
 
 Joern이 취약점 sink인 sprintf를 노드로 인식하지 못해 슬라이스가 생성되지 않아 취약점 예측이 불가능
 </details>
@@ -97,7 +93,7 @@ static void zend_throw_or_error(int fetch_type, zend_class_entry *exception_ce, 
 ```
 
 <details>
-<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
+<summary>이 코드의 취약점을 표현하는 슬라이스</summary>
 
 ```c
 // Zend/zend_execute_API.c:1368
@@ -295,7 +291,14 @@ static void xbuf_format_converter(void *xbuf, zend_bool is_char, const char *fmt
 </details>
 
 <details>
-<summary><h4 style="display:inline-block">SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유</h4></summary>
+<summary><h4 style="display:inline-block">위 슬라이스를 추출하는 것에 대한 어려움</h4></summary>
+
+: 함수명이 아닌 라인 단위의 sink
+: 사용자 정의 함수가 sink인 경우 문제 발생
+: (joern의 pdg에서 위 슬라이스의 경로를 포함하는지 확인 필요) 
+	: (joern의 pdg에 경로가 있는 경우, interprocedure call의 길이가 길어서 못찾을 가능성)
+	: (joern의 pdg에 경로가 없는 경우, 불완전한 pdg)
+
 
 ##### 불충분한 슬라이싱 범위
 프로그램 슬라이싱은 취약한 코드의 source에서 sink까지의 코드 조각을 추출하는 기술이다.
@@ -358,7 +361,7 @@ static rsRetVal initZMQ(instanceData* pData) {
         // CZMQ_EXPORT int zsocket_bind(void *self, const char *format, ...); @czmq.h
 ```
 <details>
-<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
+<summary>이 코드의 취약점을 표현하는 슬라이스</summary>
 
 ```c
 /* rsyslogd.c:1407 */
@@ -705,7 +708,9 @@ static rsRetVal initZMQ(instanceData* pData) {
 </details>
 
 <details>
-<summary><h4 style="display:inline-block">SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유</h4></summary>
+<summary><h4 style="display:inline-block">위 슬라이스를 추출하는 것에 대한 어려움</h4></summary>
+
+: nodes.csv에서 wtpSetpfDoWork 함수가 존재하는지 확인
 
 ##### 설정 파일 파서(Parser) 분석의 한계
 Ksign 슬라이서와 같은 C/C++ 코드 기반 정적 분석 도구는 .l, .y 파일과 연계된 파서의 동작을 해석하지 못하는 한계를 가집니다. 이로 인해, CVE-2017-12588과 같이 외부 설정 파일에서 시작되어 파서의 콜백 함수를 통해 C 코드로 데이터가 유입되는 유형의 취약점은 데이터 흐름의 시작점을 놓치게 되어 탐지하지 못합니다. 이는 SARD 데이터셋처럼 순수 C 코드로만 구성된 환경에서는 드러나지 않는 문제입니다.
@@ -789,7 +794,7 @@ PHP가 POST 요청을 처리하는 add_post_vars 함수에서, 처리된 데이�
 
 1. PHP 엔진이 HTTP POST 요청을 받아 php_std_post_handler 함수를 호출합니다. 이 함수는 while 루프를 돌며 POST 데이터를 청크(chunk) 단위로 읽어 post_data 버퍼에 추가합니다.
 2. php_std_post_handler는 루프를 돌 때마다 add_post_vars 함수를 호출하여 버퍼에 쌓인 데이터의 변수 파싱을 시도합니다.
-3. (버그 발생) 하지만 add_post_vars 함수는 호출될 때마다 처리 위치 포인터(vars->ptr)를 항상 버퍼의 맨 처음(vars->str.c)으로 초기화합니다. 이로 인해 이전에 파싱을 시도했던 부분을 기억하지 못하고, 매번 누적된 데이터 전체를 새로 파싱하게 됩니다.
+3. (버그 발생) 하지만 add_post_var 함수는 호출될 때마다 처리 위치 포인터(var->ptr)를 항상 버퍼의 맨 처음(var->str.c)으로 초기화합니다. 이로 인해 이전에 파싱을 시도했던 부분을 기억하지 못하고, 매번 누적된 데이터 전체를 새로 파싱하게 됩니다.
 4. add_post_vars 내부에서 호출되는 add_post_var 함수는 변수 구분자인 &를 찾기 위해 memchr를 사용합니다. 버그로 인해 memchr는 이전에 이미 & 문자가 없음을 확인했던 영역까지 포함하여, 점점 커지는 전체 버퍼를 처음부터 끝까지 반복적으로 스캔하게 됩니다.
 5. 공격자는 & 문자 없이 매우 큰 단일 변수(예: a=AAAA...)를 전송하여 이 시나리오를 유발합니다. 버퍼가 계속 커지고(8KB, 16KB, 24KB...) memchr의 스캔 범위가 그에 따라 선형적으로 증가하면서, CPU 사용량이 100%에 도달해 서비스가 마비됩니다. 변수가 하나이므로 max_input_vars 제한은 쉽게 우회됩니다.
 
@@ -800,7 +805,7 @@ static zend_bool add_post_var(zval *arr, post_var_data_t *var, zend_bool eof TSR
 	vsep = memchr(var->ptr, '&', var->end - var->ptr);
 ```
 <details>
-<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
+<summary>이 코드의 취약점을 표현하는 슬라이스</summary>
 
 ```c
 /* main/php_variables.c:335 */
@@ -881,7 +886,7 @@ static zend_bool add_post_var(zval *arr, post_var_data_t *var, zend_bool eof TSR
 </details>
 
 <details>
-<summary><h4 style="display:inline-block">SARD는 잘 탐지하는데 이 CVE는 탐지 못했던 이유</h4></summary>
+<summary><h4 style="display:inline-block">위 슬라이스를 추출하는 것에 대한 어려움</h4></summary>
 
 #### 템플릿: 비정형적 Sink
 SARD의 strcpy 같은 명백한 위험 함수와 달리, CVE의 Sink는 평소에 안전한 memchr 함수입니다. 분석기는 단순히 함수 호출을 넘어, '반복문 내에서 비정상적으로 사용되는 패턴' 자체를 이해해야만 자원 고갈(DoS) 취약점으로 인지할 수 있습니다.
@@ -942,7 +947,7 @@ OPJ_BOOL opj_t1_encode_cblks(opj_t1_t *t1,
 ```
 
 <details>
-<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
+<summary>이 코드의 취약점을 표현하는 슬라이스</summary>
 
 ```c
 /* src/bin/jp2/opj_compress.c:2016 */
@@ -1653,7 +1658,7 @@ void vdagent_file_xfers_data(struct vdagent_file_xfers *xfers,
 ```
 
 <details>
-<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
+<summary>이 코드의 취약점을 표현하는 슬라이스</summary>
 
 ```c
 /* src/vdagent/vdagent.c:354 */
@@ -1758,7 +1763,7 @@ add_server(struct manager_ctx *manager, struct server *server)
 ```
 
 <details>
-<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
+<summary>이 코드의 취약점을 표현하는 슬라이스</summary>
 
 ```c
 /* src/manager.c:1187 */
@@ -1872,7 +1877,7 @@ void DelayedExecutor::delayedExecute(const QString &udi)
 ```
 
 <details>
-<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
+<summary>이 코드의 취약점을 표현하는 슬라이스</summary>
 
 ```c
 /* userDefinedServices는 KDesktopFileActions의 메소드인데 이는 외부 라이브러리에 있는 클래스이고, 파일에서 불러오는 것! 
@@ -2008,7 +2013,7 @@ pipe_fopen(gx_io_device * iodev, const char *fname, const char *access,
 ```
 
 <details>
-<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
+<summary>이 코드의 취약점을 표현하는 슬라이스</summary>
 
 ```c
 /*
@@ -2259,7 +2264,7 @@ do_ed_script (char const *inname, char const *outname,
 ```
 
 <details>
-<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
+<summary>이 코드의 취약점을 표현하는 슬라이스</summary>
 
 ```c
 /* 포인터 분석을 잘해야 함. make_tempfile()에서 TMPOUTNAME이 outname으로부터 업데이트 된 다는 사실을 interprocedure analysis로는 식별할 수 없다. */
@@ -2963,7 +2968,7 @@ next2:
 ```
 
 <details>
-<summary>이 코드에서 Ksign 슬라이서 도구가 추출했어야 하는 슬라이스를 직접 작성해보면 다음과 같다.</summary>
+<summary>이 코드의 취약점을 표현하는 슬라이스</summary>
 
 ```c
 /* cbin.c:2043 */
