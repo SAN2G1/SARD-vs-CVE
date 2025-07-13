@@ -1943,7 +1943,8 @@ gx_device_open_output_file(const gx_device * dev, char *fname,
         code = parsed.iodev->procs.gp_fopen(parsed.iodev, parsed.fname, fmode,
                                          pfile, NULL, 0); // gdevpipe.c에 pipe_fopen()을 호출
 
-/* str이 OutputFile인거고 gx_io_device *iodev = libctx->io_device_table[i]; 에서 적절한 device를 찾은 다음에 if (dname && strlen(dname) == len + 1 && !memcmp(str, dname, len))에서 device의 첫번째 인자 "%PIPE%"와 str 값을 비교 */
+/* str이 OutputFile인거고 gx_io_device *iodev = libctx->io_device_table[i]; 에서 적절한 device를 찾은 다음에
+if (dname && strlen(dname) == len + 1 && !memcmp(str, dname, len))에서 device의 첫번째 인자 "%PIPE%"와 str 값을 비교 */
 /* base/gsiodev.c:378 */
 /* Look up an IODevice name. */
 /* The name may be either %device or %device%. */
