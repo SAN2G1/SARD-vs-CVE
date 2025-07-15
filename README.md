@@ -21,20 +21,23 @@ HTCondor의 인증 데몬(credd)에서, 소켓을 통해 수신한 'user:name' �
 이 CVE 취약점을 유발하는 코드(src/condorr_credd/credd.cpp:266)는 아래와 같다.
 
 ```c
-if (!socket->code(name)) {
-    dprintf (D_ALWAYS, "Error receiving credential name\n"); 
-    goto EXIT;
-  }
+int 
+get_cred_handler(Service * /*service*/, int /*i*/, Stream *stream) {
+  	char * name = NULL;
+	...
+	ReliSock * socket = (ReliSock*)stream;
+	...
+	socket->decode();
 
-  user = socket->getFullyQualifiedUser();
-  dprintf (D_ALWAYS, "Authenticated as %s\n", user);
-
-  if (strchr (name, ':')) {
-    owner = strdup (name);
-    char * pColon = strchr (owner, ':');
-    *pColon = '\0';
-    
-    sprintf (name, (char*)(pColon+sizeof(char)));
+	if (!socket->code(name)) {
+	...
+	if (strchr(name, ':')) {
+		owner = strdup(name);
+		char *pColon = strchr(owner, ':');
+		*pColon = '\0';
+		sprintf(name, (char *)(pColon + sizeof(char)));
+	...
+}
 ```
 
 <details>
@@ -79,6 +82,14 @@ get_cred_handler(Service * /*service*/, int /*i*/, Stream *stream) {
 : Joern이 만든 불완전한 PDG
 
 Joern이 취약점 sink인 sprintf를 노드로 인식하지 못해 슬라이스가 생성되지 않아 취약점 예측이 불가능
+
+: source 기준 함수 사전 정의의 어려움
+
+소스(Source) 함수 사전 정의의 어려움: set 함수 사례
+함수 간 슬라이싱을 수행할 때, 분석을 멈출 '소스(Source)' 기준 함수의 사전 정의가 필수적입니다.
+
+하지만 HTCondor의 Stream 클래스에 있는 사용자 정의 set 함수는 외부 입력을 처리함에도 불구하고, 정적 분석 도구가 이를 데이터의 '소스'로 식별하기 어렵습니다. set 함수는 대개 변수 값을 설정하는 데 사용되기 때문에, 정적 분석 도구 입장에서는 데이터를 외부로부터 '가져오는' 소스 함수로 파악하기에는 맥락적 정보가 부족합니다.
+
 </details>
 
 ### CVE-2015-8617
@@ -416,9 +427,6 @@ wtiWorker(wti_t *__restrict__ const pThis)
 		/* try to execute and process whatever we have */
 		localRet = pWtp->pfDoWork(pWtp->pUsr, pThis);
 		
-/* runtime/wtp.c:531 */
-DEFpropSetMethFP(wtp, pfDoWork, rsRetVal(*pVal)(void*, void*))
-
 /* runtime/obj-types.h:139 */
 #define DEFpropSetMethFP(obj, prop, dataType)\
 	rsRetVal obj##Set##prop(obj##_t *pThis, dataType)\ 
@@ -427,6 +435,9 @@ DEFpropSetMethFP(wtp, pfDoWork, rsRetVal(*pVal)(void*, void*))
 		pThis->prop = pVal; \ // pThis->pfDoWork = pVal
 		return RS_RET_OK; \
 	}
+
+/* runtime/wtp.c:531 */
+DEFpropSetMethFP(wtp, pfDoWork, rsRetVal(*pVal)(void*, void*))
 
 /* runtime/queue.c:2405 */
 rsRetVal
@@ -575,6 +586,18 @@ PHP가 POST 요청을 처리하는 add_post_vars 함수에서, 처리된 데이�
 4. add_post_vars 내부에서 호출되는 add_post_var 함수는 변수 구분자인 &를 찾기 위해 memchr를 사용합니다. 버그로 인해 memchr는 이전에 이미 & 문자가 없음을 확인했던 영역까지 포함하여, 점점 커지는 전체 버퍼를 처음부터 끝까지 반복적으로 스캔하게 됩니다.
 5. 공격자는 & 문자 없이 매우 큰 단일 변수(예: a=AAAA...)를 전송하여 이 시나리오를 유발합니다. 버퍼가 계속 커지고(8KB, 16KB, 24KB...) memchr의 스캔 범위가 그에 따라 선형적으로 증가하면서, CPU 사용량이 100%에 도달해 서비스가 마비됩니다. 변수가 하나이므로 max_input_vars 제한은 쉽게 우회됩니다.
 
+[출처](https://bugs.php.net/bug.php?id=73807)에 따르면, 아래와 같이 10000000 글자를 post로 보내면 50,71s 시간이 소요된다고 합니다. // 근데 FreeBSD에서만 발생하는 것으로 봐서는 php 코드 문제인지 의문이 듭니다.
+```php
+<form method="post">
+	<input type="hidden" name="data" value="<?php echo substr($base64, 0, 10000000); ?>">
+	<button>SEND</button>
+</form>
+```
+with 10000000 characters the time is as follows:
+FreeBSD - 50,71s
+Ubuntu/Linux - 100ms
+
+
 이 CVE 취약점을 유발하는 코드(sink:main/php_variables.c:253, memset)는 아래와 같다.
 ```
 static zend_bool add_post_var(zval *arr, post_var_data_t *var, zend_bool eof TSRMLS_DC){
@@ -594,7 +617,7 @@ SAPI_API SAPI_POST_HANDLER_FUNC(php_std_post_handler) {
     if (s && SUCCESS == php_stream_rewind(s)) {
         memset(&post_data, 0, sizeof(post_data));
 
-        while (!php_stream_eof(s)) {
+        while (!php_stream_eof(s)) { // 반복
             char buf[SAPI_POST_HANDLER_BUFSIZ] = {0};
             size_t len = php_stream_read(s, buf, SAPI_POST_HANDLER_BUFSIZ);
 
@@ -602,22 +625,14 @@ SAPI_API SAPI_POST_HANDLER_FUNC(php_std_post_handler) {
                 smart_str_appendl(&post_data.str, buf, len);
 
                 if (SUCCESS != add_post_vars(arr, &post_data, 0 TSRMLS_CC)) {
-                    if (post_data.str.c) {
-                        efree(post_data.str.c);
-                    }
-                    return;
-                }
+                    ...
+				}
             }
 
-            if (len != SAPI_POST_HANDLER_BUFSIZ) {
-                break;
-            }
+            ...
         }
 
-        add_post_vars(arr, &post_data, 1 TSRMLS_CC);
-        if (post_data.str.c) {
-            efree(post_data.str.c);
-        }
+        ...
     }
 }
 
@@ -1092,14 +1107,7 @@ OPJ_BOOL opj_j2k_encode(opj_j2k_t * p_j2k,
                 l_tilec->data  =  l_img_comp->data;
                 l_tilec->ownsData = OPJ_FALSE;
             } else {
-                if (! opj_alloc_tile_component_data(l_tilec)) {
-                    opj_event_msg(p_manager, EVT_ERROR, "Error allocating tile component data.");
-                    if (l_current_data) {
-                        opj_free(l_current_data);
-                    }
-                    return OPJ_FALSE;
-                }
-            }
+                ...
         }
         l_current_tile_size = opj_tcd_get_encoded_tile_size(p_j2k->m_tcd);
         if (!l_reuse_data) {
@@ -1131,255 +1139,72 @@ OPJ_BOOL opj_j2k_encode(opj_j2k_t * p_j2k,
             /* now copy this data into the tile component */
             if (! opj_tcd_copy_tile_data(p_j2k->m_tcd, l_current_data,
                                          l_current_tile_size)) {
-                opj_event_msg(p_manager, EVT_ERROR,
-                              "Size mismatch between tile data and sent data.");
-                opj_free(l_current_data);
-                return OPJ_FALSE;
-            }
+				...
         }
 
-        if (! opj_j2k_post_write_tile(p_j2k, p_stream, p_manager)) {
+        if (! opj_j2k_post_write_tile(p_j2k, ...)) { // p_j2k->m_tcd->tcd_image->tiles
 
 /* src/lib/openjp2/j2k.c:11531 */
-static OPJ_BOOL opj_j2k_post_write_tile(opj_j2k_t * p_j2k,
-                                        opj_stream_private_t *p_stream,
-                                        opj_event_mgr_t * p_manager)
+static OPJ_BOOL opj_j2k_post_write_tile(opj_j2k_t * p_j2k, ...)
 {
-    OPJ_UINT32 l_nb_bytes_written;
-    OPJ_BYTE * l_current_data = 00;
-    OPJ_UINT32 l_tile_size = 0;
-    OPJ_UINT32 l_available_data;
-
-    /* preconditions */
-    assert(p_j2k->m_specific_param.m_encoder.m_encoded_tile_data);
-
-    l_tile_size = p_j2k->m_specific_param.m_encoder.m_encoded_tile_size;
-    l_available_data = l_tile_size;
-    l_current_data = p_j2k->m_specific_param.m_encoder.m_encoded_tile_data;
-
-    l_nb_bytes_written = 0;
-    if (! opj_j2k_write_first_tile_part(p_j2k, l_current_data, &l_nb_bytes_written,
-                                        l_available_data, p_stream, p_manager)) {
+    ...
+    if (! opj_j2k_write_first_tile_part(p_j2k, ...)) {
 
 /* src/lib/openjp2/j2k.c:11773 */
-static OPJ_BOOL opj_j2k_write_first_tile_part(opj_j2k_t *p_j2k,
-        OPJ_BYTE * p_data,
-        OPJ_UINT32 * p_data_written,
-        OPJ_UINT32 p_total_data_size,
-        opj_stream_private_t *p_stream,
-        struct opj_event_mgr * p_manager)
+static OPJ_BOOL opj_j2k_write_first_tile_part(opj_j2k_t *p_j2k, ...)
 {
-    OPJ_UINT32 l_nb_bytes_written = 0;
-    OPJ_UINT32 l_current_nb_bytes_written;
-    OPJ_BYTE * l_begin_data = 00;
+    ...
 
     opj_tcd_t * l_tcd = 00;
-    opj_cp_t * l_cp = 00;
+    ...
 
     l_tcd = p_j2k->m_tcd;
-    l_cp = &(p_j2k->m_cp);
+    ...
 
     l_tcd->cur_pino = 0;
 
-    /*Get number of tile parts*/
-    p_j2k->m_specific_param.m_encoder.m_current_poc_tile_part_number = 0;
-
-    /* INDEX >> */
-    /* << INDEX */
-
-    l_current_nb_bytes_written = 0;
-    l_begin_data = p_data;
-    if (! opj_j2k_write_sot(p_j2k, p_data, p_total_data_size,
-                            &l_current_nb_bytes_written, p_stream,
-                            p_manager)) {
-        return OPJ_FALSE;
-    }
-
-    l_nb_bytes_written += l_current_nb_bytes_written;
-    p_data += l_current_nb_bytes_written;
-    p_total_data_size -= l_current_nb_bytes_written;
-
-    if (!OPJ_IS_CINEMA(l_cp->rsiz)) {
-        if (l_cp->tcps[p_j2k->m_current_tile_number].numpocs) {
-            l_current_nb_bytes_written = 0;
-            opj_j2k_write_poc_in_memory(p_j2k, p_data, &l_current_nb_bytes_written,
-                                        p_manager);
-            l_nb_bytes_written += l_current_nb_bytes_written;
-            p_data += l_current_nb_bytes_written;
-            p_total_data_size -= l_current_nb_bytes_written;
-        }
-    }
-
-    l_current_nb_bytes_written = 0;
-    if (! opj_j2k_write_sod(p_j2k, l_tcd, p_data, &l_current_nb_bytes_written,
-                            p_total_data_size, p_stream, p_manager)) {
+    ...
+    if (! opj_j2k_write_sod(p_j2k, l_tcd, ...)) {
 
 /* src/lib/openjp2/j2k.c:4691 */
-static OPJ_BOOL opj_j2k_write_sod(opj_j2k_t *p_j2k,
-                                  opj_tcd_t * p_tile_coder,
-                                  OPJ_BYTE * p_data,
-                                  OPJ_UINT32 * p_data_written,
-                                  OPJ_UINT32 p_total_data_size,
-                                  const opj_stream_private_t *p_stream,
-                                  opj_event_mgr_t * p_manager
-                                 )
+static OPJ_BOOL opj_j2k_write_sod(opj_j2k_t *p_j2k, opj_tcd_t * p_tile_coder, ...)
 {
-    opj_codestream_info_t *l_cstr_info = 00;
-    OPJ_UINT32 l_remaining_data;
+	...
 
-    /* preconditions */
-    assert(p_j2k != 00);
-    assert(p_manager != 00);
-    assert(p_stream != 00);
-
-    OPJ_UNUSED(p_stream);
-
-    if (p_total_data_size < 4) {
-
-    opj_write_bytes(p_data, J2K_MS_SOD,
-                    2);                                 /* SOD */
-    p_data += 2;
-
-    /* make room for the EOF marker */
-    l_remaining_data =  p_total_data_size - 4;
-
-    /* update tile coder */
-    p_tile_coder->tp_num =
-        p_j2k->m_specific_param.m_encoder.m_current_poc_tile_part_number ;
-    p_tile_coder->cur_tp_num =
-        p_j2k->m_specific_param.m_encoder.m_current_tile_part_number;
-
-    if (p_j2k->m_specific_param.m_encoder.m_current_tile_part_number == 0) {
-        p_tile_coder->tcd_image->tiles->packno = 0;
-#ifdef deadcode
-        if (l_cstr_info) {
-            l_cstr_info->packno = 0;
-        }
-#endif
-    }
-
-    *p_data_written = 0;
-
-    if (! opj_tcd_encode_tile(p_tile_coder, p_j2k->m_current_tile_number, p_data,
-                              p_data_written, l_remaining_data, l_cstr_info,
-                              p_manager))
+    if (! opj_tcd_encode_tile(p_tile_coder, ...))
 
 /* src/lib/openjp2/tcd.c:1414 */
-OPJ_BOOL opj_tcd_encode_tile(opj_tcd_t *p_tcd,
-                             OPJ_UINT32 p_tile_no,
-                             OPJ_BYTE *p_dest,
-                             OPJ_UINT32 * p_data_written,
-                             OPJ_UINT32 p_max_length,
-                             opj_codestream_info_t *p_cstr_info,
-                             opj_event_mgr_t *p_manager)
+OPJ_BOOL opj_tcd_encode_tile(opj_tcd_t *p_tcd, ...)
 {
 
     if (p_tcd->cur_tp_num == 0) {
-
-        p_tcd->tcd_tileno = p_tile_no;
-        p_tcd->tcp = &p_tcd->cp->tcps[p_tile_no];
-
-        /* INDEX >> "Precinct_nb_X et Precinct_nb_Y" */
-        if (p_cstr_info)  {
-            OPJ_UINT32 l_num_packs = 0;
-            OPJ_UINT32 i;
-            opj_tcd_tilecomp_t *l_tilec_idx =
-                &p_tcd->tcd_image->tiles->comps[0];        /* based on component 0 */
-            opj_tccp_t *l_tccp = p_tcd->tcp->tccps; /* based on component 0 */
-
-            for (i = 0; i < l_tilec_idx->numresolutions; i++) {
-                opj_tcd_resolution_t *l_res_idx = &l_tilec_idx->resolutions[i];
-
-                p_cstr_info->tile[p_tile_no].pw[i] = (int)l_res_idx->pw;
-                p_cstr_info->tile[p_tile_no].ph[i] = (int)l_res_idx->ph;
-
-                l_num_packs += l_res_idx->pw * l_res_idx->ph;
-                p_cstr_info->tile[p_tile_no].pdx[i] = (int)l_tccp->prcw[i];
-                p_cstr_info->tile[p_tile_no].pdy[i] = (int)l_tccp->prch[i];
-            }
-            p_cstr_info->tile[p_tile_no].packet = (opj_packet_info_t*) opj_calloc((
-                    OPJ_SIZE_T)p_cstr_info->numcomps * (OPJ_SIZE_T)p_cstr_info->numlayers *
-                                                  l_num_packs,
-                                                  sizeof(opj_packet_info_t));
-            if (!p_cstr_info->tile[p_tile_no].packet) {
-        }
-        /* << INDEX */
-
-        /* FIXME _ProfStart(PGROUP_DC_SHIFT); */
-        /*---------------TILE-------------------*/
-        if (! opj_tcd_dc_level_shift_encode(p_tcd)) {
-        /* FIXME _ProfStop(PGROUP_DC_SHIFT); */
-
-        /* FIXME _ProfStart(PGROUP_MCT); */
-        if (! opj_tcd_mct_encode(p_tcd)) {
-        /* FIXME _ProfStop(PGROUP_MCT); */
-
-        /* FIXME _ProfStart(PGROUP_DWT); */
-        if (! opj_tcd_dwt_encode(p_tcd)) {
-        /* FIXME  _ProfStop(PGROUP_DWT); */
-
+		...
         /* FIXME  _ProfStart(PGROUP_T1); */
         if (! opj_tcd_t1_encode(p_tcd)) {
 
 /* src/lib/openjp2/tcd.c:2511 */
 static OPJ_BOOL opj_tcd_t1_encode(opj_tcd_t *p_tcd)
 {
-    opj_t1_t * l_t1;
-    const OPJ_FLOAT64 * l_mct_norms;
-    OPJ_UINT32 l_mct_numcomps = 0U;
-    opj_tcp_t * l_tcp = p_tcd->tcp;
+    ...
 
-    l_t1 = opj_t1_create(OPJ_TRUE);
-    if (l_t1 == 00) {
-        return OPJ_FALSE;
-    }
-
-    if (l_tcp->mct == 1) {
-        l_mct_numcomps = 3U;
-        /* irreversible encoding */
-        if (l_tcp->tccps->qmfbid == 0) {
-            l_mct_norms = opj_mct_get_mct_norms_real();
-        } else {
-            l_mct_norms = opj_mct_get_mct_norms();
-        }
-    } else {
-        l_mct_numcomps = p_tcd->image->numcomps;
-        l_mct_norms = (const OPJ_FLOAT64 *)(l_tcp->mct_norms);
-    }
-
-    if (! opj_t1_encode_cblks(l_t1, p_tcd->tcd_image->tiles, l_tcp, l_mct_norms,
+    if (! opj_t1_encode_cblks(l_t1, p_tcd->tcd_image->tiles, l_tcp, l_mct_norms, 
                               l_mct_numcomps)) {
 
 /* src/lib/openjp2/t1.c:2137 */
-OPJ_BOOL opj_t1_encode_cblks(opj_t1_t *t1,
-                             opj_tcd_tile_t *tile,
-                             opj_tcp_t *tcp,
-                             const OPJ_FLOAT64 * mct_norms,
-                             OPJ_UINT32 mct_numcomps
-                            )
+OPJ_BOOL opj_t1_encode_cblks(opj_t1_t *t1, opj_tcd_tile_t *tile, ...)
 {
-    OPJ_UINT32 compno, resno, bandno, precno, cblkno;
-
-    tile->distotile = 0;        /* fixed_quality */
+    ...
 
     for (compno = 0; compno < tile->numcomps; ++compno) {
         opj_tcd_tilecomp_t* tilec = &tile->comps[compno];
-        opj_tccp_t* tccp = &tcp->tccps[compno];
-        OPJ_UINT32 tile_w = (OPJ_UINT32)(tilec->x1 - tilec->x0);
+        ...
 
         for (resno = 0; resno < tilec->numresolutions; ++resno) {
             opj_tcd_resolution_t *res = &tilec->resolutions[resno];
 
             for (bandno = 0; bandno < res->numbands; ++bandno) {
                 opj_tcd_band_t* OPJ_RESTRICT band = &res->bands[bandno];
-                OPJ_INT32 bandconst;
-
-                /* Skip empty bands */
-                if (opj_tcd_is_band_empty(band)) {
-                    continue;
-                }
-
-                bandconst = 8192 * 8192 / ((OPJ_INT32) floor(band->stepsize * 8192));
+                ...
                 for (precno = 0; precno < res->pw * res->ph; ++precno) {
                     opj_tcd_precinct_t *prc = &band->precincts[precno];
 
@@ -2726,429 +2551,106 @@ radare2의 명령어 처리기에서, 악의적으로 조작된 심볼 이름을
 이 CVE 취약점을 유발하는 코드(sink:libr/core/cmd.c:3017)는 아래와 같다.
 
 ```c
-/* libr/core/cmd.c:3017 */
-// *cmd = "f sym.imp.`!sleep 999` 16 0x0"
-static int r_core_cmd_subst_i(RCore *core, char *cmd, char *colon, bool *tmpseek) { 
-	if (!cmd) {
-	cmd = r_str_trim_head_tail (cmd);
-next2:
-	ptr = strchr (cmd, '`'); // *(ptr) = '`!sleep 999` 16 0x0'
-	if (ptr) {
-		if (ptr > cmd) {
-		bool empty = false;
-		if (empty) {
-		} else {
-			*ptr = '\0';
-			if (ptr[1] == '!') { 
-				str = r_core_cmd_str_pipe (core, ptr + 1); 
-				// *(ptr + 1) = '!sleep 999` 16 0x0'
-				// !로 시작하면 내부적으로 bash command로서 실행.
+/* libr/util/sandbox.c:185 */
+R_API int r_sandbox_system (const char *x, int n) {
+	if (enabled) {
+		eprintf ("sandbox: system call disabled\n");
+		return -1;
+	}
+#if LIBC_HAVE_FORK
+#if LIBC_HAVE_SYSTEM
+	if (n) {
+		return system (x);
 ```
 
 <details>
 <summary>이 코드의 취약점을 표현하는 슬라이스</summary>
 
 ```c
-/* cbin.c:2043 */
-static int bin_symbols(RCore *r, int mode, ut64 laddr, int va, ut64 at, const char *name, bool exponly, const char *args) {
-	RBinInfo *info = r_bin_get_info (r->bin);
-	RList *entries = r_bin_get_entries (r->bin);
-	RBinSymbol *symbol;
-	RBinAddr *entry;
-	RListIter *iter;
-	bool firstexp = true;
-	bool printHere = false;
-	int i = 0, lastfs = 's';
-	bool bin_demangle = r_config_get_i (r->config, "bin.demangle");
-	if (!info) {
-		return 0;
-	}
+libr/core/cmd_open.c:1412
 
-	if (args && *args == '.') {
-		printHere = true;
-	}
-
-	bool is_arm = info && info->arch && !strncmp (info->arch, "arm", 3);
-	const char *lang = bin_demangle ? r_config_get (r->config, "bin.lang") : NULL;
-
-	RList *symbols = r_bin_get_symbols (r->bin);
-
-	/* cbin.c:2073 */
-	size_t count = 0;
-	r_list_foreach (symbols, iter, symbol) {
-		if (!symbol->name) {
-			continue;
-		}
-		char *r_symbol_name = r_str_escape_utf8 (symbol->name, false, true);
-
-	/* cbin.c:2216 */
-	const char *name = sn.demname? sn.demname: r_symbol_name;
-	if (!name) {
-		goto next;
-	}
-	if (!strncmp (name, "imp.", 4)) {
-		if (lastfs != 'i') {
-			r_cons_printf ("fs imports\n");
-		}
-		lastfs = 'i';
-	} else {
-		if (lastfs != 's') {
-			const char *fs = exponly? "exports": "symbols";
-			r_cons_printf ("fs %s\n", fs);
-		}
-		lastfs = 's';
-	}
-	if (r->bin->prefix || *name) { // we don't want unnamed symbol flags
-		char *flagname = construct_symbol_flagname ("sym", name, MAXFLAG_LEN_DEFAULT);
-		if (!flagname) {
-			goto next;
-		}
-		r_cons_printf ("\"f %s%s%s %u 0x%08" PFMT64x "\"\n",
-			r->bin->prefix ? r->bin->prefix : "", r->bin->prefix ? "." : "",
-			flagname, symbol->size, addr);
-
-/* libr/core/cbin.c:3811 */
-R_API int r_core_bin_info(RCore *core, int action, int mode, int va, RCoreBinFilter *filter, const char *chksum) {
-	int ret = true;
-	const char *name = NULL;
-	ut64 at = 0, loadaddr = r_bin_get_laddr (core->bin);
-	if (filter && filter->offset) {
-	if (filter && filter->name) {
-
-	// use our internal values for va
-	va = va ? VA_TRUE : VA_FALSE;
-	if ((action & R_CORE_BIN_ACC_STRINGS)) {
-	if ((action & R_CORE_BIN_ACC_RAW_STRINGS)) {
-	if ((action & R_CORE_BIN_ACC_INFO)) {
-	if ((action & R_CORE_BIN_ACC_MAIN)) {
-	if ((action & R_CORE_BIN_ACC_DWARF)) {
-	if ((action & R_CORE_BIN_ACC_PDB)) {
-	if ((action & R_CORE_BIN_ACC_SOURCE)) {
-	if ((action & R_CORE_BIN_ACC_ENTRIES)) {
-	if ((action & R_CORE_BIN_ACC_INITFINI)) {
-	if ((action & R_CORE_BIN_ACC_SECTIONS)) {
-	if ((action & R_CORE_BIN_ACC_SEGMENTS)) {
-	if (r_config_get_i (core->config, "bin.relocs")) {
-		if ((action & R_CORE_BIN_ACC_RELOCS)) {
-	}
-	if ((action & R_CORE_BIN_ACC_LIBS)) {
-	if ((action & R_CORE_BIN_ACC_IMPORTS)) { // 5s
-	if ((action & R_CORE_BIN_ACC_EXPORTS)) {
-		ret &= bin_symbols (core, mode, loadaddr, va, at, name, true, chksum);
-	}
-	if ((action & R_CORE_BIN_ACC_SYMBOLS)) { // 6s
-		ret &= bin_symbols (core, mode, loadaddr, va, at, name, false, chksum);
-
-/* libr/core/cmd_info.c:571 */ 
-static int cmd_info(void *data, const char *input) {
-	RCore *core = (RCore *) data;
-	bool newline = r_cons_is_interactive ();
-	int fd = r_io_fd_get_current (core->io);
-	RIODesc *desc = r_io_desc_get (core->io, fd);
-	int i, va = core->io->va || core->io->debug;
-	int mode = 0; //R_MODE_SIMPLE;
-	bool rdump = false;
-	int is_array = 0;
-	Sdb *db;
-
-	for (i = 0; input[i] && input[i] != ' '; i++)
-		;
-	if (i > 0) {
-		switch (input[i - 1]) {
-		case '*': mode = R_MODE_RADARE; break;
-		case 'j': mode = R_MODE_JSON; break;
-		case 'q': mode = R_MODE_SIMPLE; break;
-		}
-	}
-	if (mode == R_MODE_JSON) {
-		int suffix_shift = 0;
-		if (!strncmp (input, "SS", 2) || !strncmp (input, "ee", 2)
-			|| !strncmp (input, "zz", 2)) {
-			suffix_shift = 1;
-		}
-		if (strlen (input + 1 + suffix_shift) > 1) {
-			is_array = 1;
-		}
-	}
-	if (is_array) {
-		r_cons_printf ("{");
-	}
-	if (!*input) {
-		cmd_info_bin (core, va, mode);
-	}
-	/* i* is an alias for iI* */
-	if (!strcmp (input, "*")) {
-		input = "I*";
-	}
-	char *question = strchr (input, '?');
-	const char *space = strchr (input, ' ');
-	if (!space) {
-		space = question + 1;
-	}
-	if (question < space && question > input) {
-	while (*input) {
-		switch (*input) {
-		case 'o': // "io"
-		{
-			if (!desc) {
-				eprintf ("Core file not open\n");
-				return 0;
-			}
-			const char *fn = input[1] == ' '? input + 2: desc->name;
-			ut64 baddr = r_config_get_i (core->config, "bin.baddr");
-			r_core_bin_load (core, fn, baddr);
-		}
-		break;
-			#define RBININFO(n,x,y,z)\
-				if (is_array) {\
-					if (is_array == 1) { is_array++;\
-					} else { r_cons_printf (",");}\
-					r_cons_printf ("\"%s\":",n);\
-				}\
-				if (z) { playMsg (core, n, z);}\
-				r_core_bin_info (core, x, mode, va, NULL, y);
-
-/* libr/core/cmd_info.c:793 */ 
-static int cmd_info(void *data, const char *input) {
-	RCore *core = (RCore *) data;
-	bool newline = r_cons_is_interactive ();
-	int fd = r_io_fd_get_current (core->io);
-	RIODesc *desc = r_io_desc_get (core->io, fd);
-	int i, va = core->io->va || core->io->debug;
-	int mode = 0; //R_MODE_SIMPLE;
-	bool rdump = false;
-	int is_array = 0;
-	Sdb *db;
-
-	for (i = 0; input[i] && input[i] != ' '; i++)
-		;
-	if (i > 0) {
-		switch (input[i - 1]) {
-		case '*': mode = R_MODE_RADARE; break;
-		case 'j': mode = R_MODE_JSON; break;
-		case 'q': mode = R_MODE_SIMPLE; break;
-		}
-	}
-	if (mode == R_MODE_JSON) {
-		int suffix_shift = 0;
-		if (!strncmp (input, "SS", 2) || !strncmp (input, "ee", 2)
-			|| !strncmp (input, "zz", 2)) {
-			suffix_shift = 1;
-		}
-		if (strlen (input + 1 + suffix_shift) > 1) {
-			is_array = 1;
-		}
-	}
-	if (is_array) {
-		r_cons_printf ("{");
-	}
-	if (!*input) {
-		cmd_info_bin (core, va, mode);
-	}
-	/* i* is an alias for iI* */
-	if (!strcmp (input, "*")) {
-		input = "I*";
-	}
-	char *question = strchr (input, '?');
-	const char *space = strchr (input, ' ');
-	if (!space) {
-		space = question + 1;
-	}
-	if (question < space && question > input) {
-	while (*input) {
-		switch (*input) { // *input = "s*"
-		case 's': { // "is"
-			RBinObject *obj = r_bin_cur_object (core->bin);
-			// Case for isj.
-			if (input[1] == 'j' && input[2] == '.') {
-				mode = R_MODE_JSON;
-				RBININFO ("symbols", R_CORE_BIN_ACC_SYMBOLS, input + 2, (obj && obj->symbols)? r_list_length (obj->symbols): 0);
-			} else if (input[1] == 'q' && input[2] == 'q') {
-				mode = R_MODE_SIMPLEST;
-				RBININFO ("symbols", R_CORE_BIN_ACC_SYMBOLS, input + 1, (obj && obj->symbols)? r_list_length (obj->symbols): 0);
-			} else if (input[1] == 'q' && input[2] == '.') {
-				mode = R_MODE_SIMPLE;
-				RBININFO ("symbols", R_CORE_BIN_ACC_SYMBOLS, input + 2, 0);
+		case 'd': // "ood" : reopen in debugger
+			if (input[2] == 'r') { // "oodr"
+				r_core_cmdf (core, "dor %s", input + 3);
+				r_core_file_reopen_debug (core, "");
+			} else if ('?' == input[2]) {
+				r_core_cmd_help (core, help_msg_ood);
 			} else {
-				RBININFO ("symbols", R_CORE_BIN_ACC_SYMBOLS, input + 1, (obj && obj->symbols)? r_list_length (obj->symbols): 0);
+				r_core_file_reopen_debug (core, input + 2);
+			}
 
-/* libr/core/cmd.c:4734 */
-R_API void r_core_cmd_init(RCore *core) {
-	struct {
-		const char *cmd;
-		const char *description;
-		int (*callback)(void *data, const char *input)
-		int (*cb)(void *data, const char *input)
-	} cmds[] = {
-		{"info",     "get file info", cmd_info, cmd_info_init},
-	...
-		for (i = 0; i < R_ARRAY_SIZE (cmds); i++) {
-		r_cmd_add (core->rcmd, cmds[i].cmd, cmds[i].description, cmds[i].cb);
-	}
+libr/core/cmd_open.c:907
 
-/* libr/core/cmd_api.c:244 */
-R_API int r_cmd_call(RCmd *cmd, const char *input) {
-	struct r_cmd_item_t *c;
-	int ret = -1;
-	RListIter *iter;
-	RCorePlugin *cp;
-	r_return_val_if_fail (cmd && input, -1);
-	if (!*input) {
-	} else {
-		char *nstr = NULL;
-		const char *ji = r_cmd_alias_get (cmd, input, 1);
-		if (ji) {
-		}
-		r_list_foreach (cmd->plist, iter, cp) {
-		}
-		if (!*input) {
-		}
-		c = cmd->cmds[((ut8)input[0]) & 0xff];
-		if (c && c->callback) {
-			const char *inp = (*input)? input + 1: ""; // *input = "is*", *inp = "s*"
-			ret = c->callback (cmd->data, inp);
+R_API void r_core_file_reopen_debug(RCore *core, const char *args) {
+ ...
+		r_core_cmd0 (core, ".is*");
 
-/* libr/core/cmd.c:3538 */
-static int r_core_cmd_subst_i(RCore *core, char *cmd, char *colon, bool *tmpseek) {
-	RList *tmpenvs = r_list_newf (tmpenvs_free);
-	const char *quotestr = "`";
-	const char *tick = NULL;
-	char *ptr, *ptr2, *str;
-	char *arroba = NULL;
-	char *grep = NULL;
-	RIODesc *tmpdesc = NULL;
-	int pamode = !core->io->va;
-	int i, ret = 0, pipefd;
-	bool usemyblock = false;
-	int scr_html = -1;
-	int scr_color = -1;
-	bool eos = false;
-	bool haveQuote = false;
-	bool oldfixedarch = core->fixedarch;
-	bool oldfixedbits = core->fixedbits;
-	bool cmd_tmpseek = false;
-	ut64 tmpbsz = core->blocksize;
-	int cmd_ignbithints = -1;
+libr/core/cmd.c:4538
 
-	if (!cmd) {
-		r_list_free (tmpenvs);
-		return 0;
-	}
-	cmd = r_str_trim_head_tail (cmd);
-	...
-	
-fuji:
-	rc = cmd? r_cmd_call (core->rcmd, r_str_trim_head (cmd)): false;
+R_API int r_core_cmd0(RCore *core, const char *cmd) {
+	return r_core_cmd (core, cmd, 0);
+}
 
-/* libr/core/cmd.c:2418 */
+libr/core/cmd.c:4373
+
+R_API int r_core_cmd(RCore *core, const char *cstr, int log) {
+ ...
+		ret = r_core_cmd_subst (core, rcmd);
+
+libr/core/cmd.c:2418
+
 static int r_core_cmd_subst(RCore *core, char *cmd) {
-	ut64 rep = strtoull (cmd, NULL, 10);
-	int ret = 0, orep;
-	char *cmt, *colon = NULL, *icmd = NULL;
-	bool tmpseek = false;
-	bool original_tmpseek = core->tmpseek;
-
-	if (r_str_startswith (cmd, "GET /cmd/")) {
-		memmove (cmd, cmd + 9, strlen (cmd + 9) + 1);
-		char *http = strstr (cmd, "HTTP");
-		if (http) {
-			*http = 0;
-			http--;
-			if (*http == ' ') {
-				*http = 0;
-			}
-		}
-		r_cons_printf ("HTTP/1.0 %d %s\r\n%s"
-				"Connection: close\r\nContent-Length: %d\r\n\r\n",
-				200, "OK", "", -1);
-		return r_core_cmd0 (core, cmd);
-	}
-
-	/* must store a local orig_offset because there can be
-	* nested call of this function */
-	ut64 orig_offset = core->offset;
-	icmd = strdup (cmd);
-
-	if (core->max_cmd_depth - core->cons->context->cmd_depth == 1) {
-		core->prompt_offset = core->offset;
-	}
-	cmd = r_str_trim_head_tail (icmd);
-	if (*cmd != '"') {
-	} else {
-		colon = NULL;
-	}
-	if (rep > 0) {
-		while (IS_DIGIT (*cmd)) {
-			cmd++;
-		}
-		// do not repeat null cmd
-		if (!*cmd) {
-	}
-	if (rep < 1) {
-		rep = 1;
-	}
-	// XXX if output is a pipe then we don't want to be interactive
-	if (rep > 1 && r_sandbox_enable (0)) {
-	} else {
-	}
-	// TODO: store in core->cmdtimes to speedup ?
-	const char *cmdrep = core->cmdtimes ? core->cmdtimes: "";
-	orep = rep;
-
-	r_cons_break_push (NULL, NULL);
-
-	int ocur_enabled = core->print && core->print->cur_enabled;
-	while (rep-- && *cmd) {
-		if (core->print) {
-			core->print->cur_enabled = false;
-			if (ocur_enabled && core->seltab >= 0) {
-				if (core->seltab == core->curtab) {
-					core->print->cur_enabled = true;
-				}
-			}
-		}
-		if (r_cons_is_breaked ()) {
-		char *cr = strdup (cmdrep);
-		core->break_loop = false;
+ ...
 		ret = r_core_cmd_subst_i (core, cmd, colon, (rep == orep - 1) ? &tmpseek : NULL);
 
-/* libr/core/cmd.c:4373 */
+
+libr/core/cmd.c:3538
+
+static int r_core_cmd_subst_i(RCore *core, char *cmd, char *colon, bool *tmpseek) {
+ ...
+
+	rc = cmd? r_cmd_call (core->rcmd, r_str_trim_head (cmd)): false;
+
+
+libr/core/cmd_api.c:244
+
+R_API int r_cmd_call(RCmd *cmd, const char *input) {
+ ... 
+                // libr/core/cmd.d:4750
+		//	struct {
+		//		const char *cmd;
+		//		const char *description;
+		//		r_cmd_callback (cb);
+		//		void (*descriptor_init)(RCore *core);
+		//	} cmds[] = {
+		//           ...
+		//      		{".",        "interpret", cmd_interpret},
+
+		c = cmd->cmds[((ut8)input[0]) & 0xff]; // input[0] == '.'
+		if (c && c->callback) {
+			const char *inp = (*input)? input + 1: ""; // input+1은 점 다음 명령
+			ret = c->callback (cmd->data, inp);
+
+libr/core/cmd.c:1108,1213
+
+static int cmd_interpret(void *data, const char *input) {
+ ...
+	ptr = str = r_core_cmd_str (core, inp);
+
+
+libr/core/cmd.c:4618, 4623
+
+R_API char *r_core_cmd_str(RCore *core, const char *cmd) {
+  ...
+	if (r_core_cmd (core, cmd, 0) == -1) {
+
+libr/core/cmd.c:4301,4373
+
 R_API int r_core_cmd(RCore *core, const char *cstr, int log) {
-	char *cmd, *ocmd, *ptr, *rcmd;
-	int ret = false, i;
-
-	if (core->cmdfilter) {
-		const char *invalid_chars = ";|>`@";
-		for (i = 0; invalid_chars[i]; i++) {
-			if (strchr (cstr, invalid_chars[i])) {
-		}
-		if (strncmp (cstr, core->cmdfilter, strlen (core->cmdfilter))) {
-	}
-	if (core->cmdremote) {
-		if (*cstr != '=' && *cstr != 'q' && strncmp (cstr, "!=", 2)) {
-	}
-
-	if (!cstr || (*cstr == '|' && cstr[1] != '?')) {
-	if (!strncmp (cstr, "/*", 2)) {
-		if (r_sandbox_enable (0)) {
-		core->incomment = true;
-	} else if (!strncmp (cstr, "*/", 2)) {
-	if (core->incomment) {
-	if (log && (*cstr && (*cstr != '.' || !strncmp (cstr, ".(", 2)))) {
-		free (core->lastcmd);
-		core->lastcmd = strdup (cstr);
-	}
-
-	ocmd = cmd = malloc (strlen (cstr) + 4096);
-	if (!ocmd) {
-	r_str_cpy (cmd, cstr);
-	if (log) {
-		r_line_hist_add (cstr);
-	}
-
-	if (core->cons->context->cmd_depth < 1) {
-	core->cons->context->cmd_depth--;
-	for (rcmd = cmd;;) {
+   ...
+            r_str_cpy (cmd, cstr);
+   ...
+            for (rcmd = cmd;;) {
 		ptr = strchr (rcmd, '\n');
 		if (ptr) {
 			*ptr = '\0';
@@ -3156,396 +2658,125 @@ R_API int r_core_cmd(RCore *core, const char *cstr, int log) {
 		ret = r_core_cmd_subst (core, rcmd);
 
 
-/* libr/core/cmd.c:4623 */
-/* return: pointer to a buffer with the output of the command */
-R_API char *r_core_cmd_str(RCore *core, const char *cmd) {
-	const char *static_str;
-	char *retstr = NULL;
-	r_cons_push ();
-	if (r_core_cmd (core, cmd, 0) == -1) {
+libr/core/cmd.c:2316,2418
 
-// is*
-/* libr/core/cmd.c:1231 */
-static int cmd_interpret(void *data, const char *input) {
-	char *str, *ptr, *eol, *rbuf, *filter, *inp;
-	const char *host, *port, *cmd;
-	RCore *core = (RCore *)data;
+static int r_core_cmd_subst(RCore *core, char *cmd) {
+ ...
+		ret = r_core_cmd_subst_i (core, cmd, colon, (rep == orep - 1) ? &tmpseek : NULL);
 
-	switch (*input) {
-	default:
-		if (*input >= 0 && *input <= 9) {
-			eprintf ("|ERROR| No .[0..9] to avoid infinite loops\n");
-			break;
-		}
-		inp = strdup (input);
-		filter = strchr (inp, '~');
-		if (filter) {
-		int tmp_html = r_cons_singleton ()->is_html;
-		r_cons_singleton ()->is_html = 0;
-		ptr = str = r_core_cmd_str (core, inp); // *inp = "is*"
-		// *(ptr) = "f sym.imp.`!sleep 999` 16 0x0\nf sym.imp.`!sleep 999` 16 0x0\nf sym.imp.`!sleep 999` 16 0x0\n"
+   // r_core_cmd_subst_i를 재귀 호출하고
+   // r_cmd_call을 재귀 호출하고
 
-		r_cons_singleton ()->is_html = tmp_html;
+   // cmd->cmds[ ... ]에서 이번에는 cmd.c:4765에서
+   //  ( '.'이 아니라 ) 'i' 명령어를 인덱스로
+   // cmd_info 함수를 찾아 호출한다!!!
 
-		if (filter) {
-		r_cons_break_push (NULL, NULL);
-		if (ptr) {
-			for (;;) {
-				if (r_cons_is_breaked ()) {
-					break;
-				}
-				eol = strchr (ptr, '\n');
-				if (eol) {
-					*eol = '\0';
-				}
-				if (*ptr) {
-					// *(ptr) = "f sym.imp.`!sleep 999` 16 0x0\0"
-					char *p = r_str_append (strdup (ptr), filter); 
-					r_core_cmd0 (core, p);
+   //	struct {
+   //		const char *cmd;
+   //		const char *description;
+   //		r_cmd_callback (cb);
+   //		void (*descriptor_init)(RCore *core);
+   //	} cmds[] = {
+   //            ...
+   //     	{"info",     "get file info", cmd_info, cmd_info_init},
 
-                    
-/* f sym.imp.`!sleep 999` 16 0x0 */
-/* libr/core/cmd.c:4538 */
-R_API int r_core_cmd0(RCore *core, const char *cmd) {
-	return r_core_cmd (core, cmd, 0);
+   //		c = cmd->cmds[((ut8)input[0]) & 0xff];
+   //		if (c && c->callback) {
+   //			const char *inp = (*input)? input + 1: "";
+   //			ret = c->callback (cmd->data, inp);
 
-/* libr/core/cmd.c:4373 */
-R_API int r_core_cmd(RCore *core, const char *cstr, int log) {
-	char *cmd, *ocmd, *ptr, *rcmd;
-	int ret = false, i;
 
-	if (core->cmdfilter) {
-		const char *invalid_chars = ";|>`@";
-		for (i = 0; invalid_chars[i]; i++) {
-			if (strchr (cstr, invalid_chars[i])) {
-		}
-		if (strncmp (cstr, core->cmdfilter, strlen (core->cmdfilter))) {
-	}
-	if (core->cmdremote) {
-		if (*cstr != '=' && *cstr != 'q' && strncmp (cstr, "!=", 2)) {
+// libr/core/cmd_info.c:441,780,793  "is*"
+static int cmd_info(void *data, const char *input) {
+ ...
+		case 's': { // "is"
+			RBinObject *obj = r_bin_cur_object (core->bin); // 바이너리 가져오기
+                        ...
+                   else { // "is*"
+				RBININFO ("symbols", R_CORE_BIN_ACC_SYMBOLS, input + 1, 
+                                 (obj && obj->symbols)? r_list_length (obj->symbols): 0);
+		   }
+
+// RBININFO 매크로 확장
+// r_core_bin_info() 함수 호출
+
+   if (is_array) { 
+      if (is_array == 1) { is_array++; } else { r_cons_printf (",");} 
+      r_cons_printf ("\"%s\":","symbols"); 
+   } 
+   if ((obj && obj->symbols)? r_list_length (obj->symbols): 0) { 
+      playMsg (core, "symbols", (obj && obj->symbols)? r_list_length (obj->symbols): 0);
+   } 
+   r_core_bin_info (core, 0x040, mode, va, ((void *)0), input + 1);
+
+
+// libr/core/cbin.c:3745, 3811
+R_API int r_core_bin_info(RCore *core, int action, int mode, int va, RCoreBinFilter *filter, const char *chksum) {
+   ...
+	if ((action & R_CORE_BIN_ACC_SYMBOLS)) { // 6s
+		ret &= bin_symbols (core, mode, loadaddr, va, at, name, false, chksum);
 	}
 
-	if (!cstr || (*cstr == '|' && cstr[1] != '?')) {
-	if (!strncmp (cstr, "/*", 2)) {
-		if (r_sandbox_enable (0)) {
-		}
-		core->incomment = true;
-	} else if (!strncmp (cstr, "*/", 2)) {
-	}
-	if (core->incomment) {
-	}
-	if (log && (*cstr && (*cstr != '.' || !strncmp (cstr, ".(", 2)))) {
-		free (core->lastcmd);
-		core->lastcmd = strdup (cstr);
-	}
 
-	ocmd = cmd = malloc (strlen (cstr) + 4096);
-	if (!ocmd) {
-	r_str_cpy (cmd, cstr);
-	if (log) {
+// libr/core/cbin.c:2022,2216  심볼 플래그를 출력 flag sym.n1 0xc1 8 ....
+static int bin_symbols(RCore *r, int mode, ut64 laddr, int va, ut64 at, const char *name, bool exponly, const char *args) {
+  ...
+	r_cons_printf ("\"f %s%s%s %u 0x%08" PFMT64x "\"\n",
+	   r->bin->prefix ? r->bin->prefix : "", r->bin->prefix ? "." : "",
+		flagname, symbol->size, addr);
 
-	if (core->cons->context->cmd_depth < 1) {
-	core->cons->context->cmd_depth--;
+// cmd->cmds['i']  is*의 callback 함수 호출 자리로 돌아가고
+// cmd->cmds['.']  .의 callback 함수 호출 자리로 돌아간다
+
+// libr/core/cmd.c:4373으로 리턴
+// is* 실행 결과로 나온 "flag sym.n1 0xc0 8\nflag sym.n2 0xff 2\n ..."
+//  문자열이rcmd에 append되고
+//  아래 for문에 의해 '\n'로 strchr로 찾은 문자열을
+//  다음 명령어로 반복 실행 
+
 	for (rcmd = cmd;;) {
-		ptr = strchr (rcmd, '\n'); 
+		ptr = strchr (rcmd, '\n');
 		if (ptr) {
 			*ptr = '\0';
 		}
 		ret = r_core_cmd_subst (core, rcmd);
-    
-/* libr/core/cmd.c:2418 */
-static int r_core_cmd_subst(RCore *core, char *cmd) {
-	ut64 rep = strtoull (cmd, NULL, 10);
-	int ret = 0, orep;
-	char *cmt, *colon = NULL, *icmd = NULL;
-	bool tmpseek = false;
-	bool original_tmpseek = core->tmpseek;
-
-	if (r_str_startswith (cmd, "GET /cmd/")) {
-		memmove (cmd, cmd + 9, strlen (cmd + 9) + 1);
-		char *http = strstr (cmd, "HTTP");
-		if (http) {
-			*http = 0;
-			http--;
-			if (*http == ' ') {
-				*http = 0;
-			}
+		if (ret == -1) {
+			eprintf ("|ERROR| Invalid command '%s' (0x%02x)\n", rcmd, *rcmd);
+			break;
 		}
-		r_cons_printf ("HTTP/1.0 %d %s\r\n%s"
-				"Connection: close\r\nContent-Length: %d\r\n\r\n",
-				200, "OK", "", -1);
-		return r_core_cmd0 (core, cmd);
-	}
-
-	/* must store a local orig_offset because there can be
-	 * nested call of this function */
-	ut64 orig_offset = core->offset;
-	icmd = strdup (cmd);
-
-	if (core->max_cmd_depth - core->cons->context->cmd_depth == 1) {
-		core->prompt_offset = core->offset;
-	}
-	cmd = r_str_trim_head_tail (icmd);
-	if (*cmd != '"') {
-	} else {
-		colon = NULL;
-	}
-	if (rep > 0) {
-		while (IS_DIGIT (*cmd)) {
-			cmd++;
+		if (!ptr) {
+			break;
 		}
-		// do not repeat null cmd
-		if (!*cmd) {
+		rcmd = ptr + 1;
 	}
-	if (rep < 1) {
-		rep = 1;
-	}
-	// XXX if output is a pipe then we don't want to be interactive
-	if (rep > 1 && r_sandbox_enable (0)) {
-	} else {
-	}
-	// TODO: store in core->cmdtimes to speedup ?
-	const char *cmdrep = core->cmdtimes ? core->cmdtimes: "";
-	orep = rep;
 
-	r_cons_break_push (NULL, NULL);
+// 그 결과 is*로 출력한 flag 명령어들이 실행되고
+// 심볼에 `!id`가 포함되어 있는 flag 명령어가 있으면
+// r_core_cmd_subst_i() 함수에서 
+// `...`과 ! 쉘 명령어를 인식하고
+// cmd->cmds[ '!' ]의 콜백 함수를 실행 
 
-	int ocur_enabled = core->print && core->print->cur_enabled;
-	while (rep-- && *cmd) {
-		if (core->print) {
-			core->print->cur_enabled = false;
-			if (ocur_enabled && core->seltab >= 0) {
-				if (core->seltab == core->curtab) {
-					core->print->cur_enabled = true;
-				}
-			}
-		}
-		if (r_cons_is_breaked ()) {
-		char *cr = strdup (cmdrep);
-		core->break_loop = false;
-		ret = r_core_cmd_subst_i (core, cmd, colon, (rep == orep - 1) ? &tmpseek : NULL);
+libr/core/cmd.c:2506,2990,3016-3018
 
-/* libr/core/cmd.c:3017 */
 static int r_core_cmd_subst_i(RCore *core, char *cmd, char *colon, bool *tmpseek) {
-	RList *tmpenvs = r_list_newf (tmpenvs_free);
-	const char *quotestr = "`";
-	const char *tick = NULL;
-	char *ptr, *ptr2, *str;
-	char *arroba = NULL;
-	char *grep = NULL;
-	RIODesc *tmpdesc = NULL;
-	int pamode = !core->io->va;
-	int i, ret = 0, pipefd;
-	bool usemyblock = false;
-	int scr_html = -1;
-	int scr_color = -1;
-	bool eos = false;
-	bool haveQuote = false;
-	bool oldfixedarch = core->fixedarch;
-	bool oldfixedbits = core->fixedbits;
-	bool cmd_tmpseek = false;
-	ut64 tmpbsz = core->blocksize;
-	int cmd_ignbithints = -1;
-
-	if (!cmd) {
-		r_list_free (tmpenvs);
-		return 0;
-	}
-	cmd = r_str_trim_head_tail (cmd);
-escape_redir:
-next2:
+ ...
 	/* sub commands */
-	ptr = strchr (cmd, '`'); // *(ptr) = '`!sleep 999` 16 0x0', ptr는 실행할 명령어, *(cmd) = "f sym.imp.`!sleep 999` 16 0x0"
-	if (ptr) {
-		if (ptr > cmd) {
-		bool empty = false;
-		int oneline = 1;
-		if (ptr[1] == '`') {
-		ptr2 = strchr (ptr + 1, '`');
-		if (empty) {
-			/* do nothing */
-		} else if (!ptr2) {
-		} else {
-			int value = core->num->value;
-			*ptr = '\0';
-			*ptr2 = '\0';
-			if (ptr[1] == '!') { 
-				str = r_core_cmd_str_pipe (core, ptr + 1); 
-				// *(ptr + 1) = '!sleep 999', ptr는 실행할 명령어
+	ptr = strchr (cmd, '`');
 
-/* libr/core/cmd.c:4585 */
+ ...
+        if (ptr[1] == '!') {
+	   str = r_core_cmd_str_pipe (core, ptr + 1);
+        } else {
+
+libr/core/cmd.c:4547, 4585
+
 R_API char *r_core_cmd_str_pipe(RCore *core, const char *cmd) {
-	char *s, *tmp = NULL;
-	if (r_sandbox_enable (0)) {
-		char *p = (*cmd != '"')? strchr (cmd, '|'): NULL;
-		if (p) {
-		}
-		return r_core_cmd_str (core, cmd);
-	}
-	r_cons_reset ();
-	r_sandbox_disable (1);
-	if (r_file_mkstemp ("cmd", &tmp) != -1) {
-		int pipefd = r_cons_pipe_open (tmp, 1, 0);
-		if (pipefd == -1) {
-		char *_cmd = strdup (cmd);
-		r_core_cmd_subst (core, _cmd);
+ ...
+   r_core_cmd_subst (core, _cmd);
 
-/* libr/core/cmd.c:2418 */
-static int r_core_cmd_subst(RCore *core, char *cmd) {
-	ut64 rep = strtoull (cmd, NULL, 10);
-	int ret = 0, orep;
-	char *cmt, *colon = NULL, *icmd = NULL;
-	bool tmpseek = false;
-	bool original_tmpseek = core->tmpseek;
-
-	if (r_str_startswith (cmd, "GET /cmd/")) {
-		memmove (cmd, cmd + 9, strlen (cmd + 9) + 1);
-		char *http = strstr (cmd, "HTTP");
-		if (http) {
-			*http = 0;
-			http--;
-			if (*http == ' ') {
-				*http = 0;
-			}
-		}
-		r_cons_printf ("HTTP/1.0 %d %s\r\n%s"
-				"Connection: close\r\nContent-Length: %d\r\n\r\n",
-				200, "OK", "", -1);
-		return r_core_cmd0 (core, cmd);
-	}
-
-	/* must store a local orig_offset because there can be
-	 * nested call of this function */
-	ut64 orig_offset = core->offset;
-	icmd = strdup (cmd);
-
-	if (core->max_cmd_depth - core->cons->context->cmd_depth == 1) {
-		core->prompt_offset = core->offset;
-	}
-	cmd = r_str_trim_head_tail (icmd);
-	if (*cmd != '"') {
-	} else {
-		colon = NULL;
-	}
-	if (rep > 0) {
-		while (IS_DIGIT (*cmd)) {
-			cmd++;
-		}
-		// do not repeat null cmd
-		if (!*cmd) {
-	}
-	if (rep < 1) {
-		rep = 1;
-	}
-	// XXX if output is a pipe then we don't want to be interactive
-	if (rep > 1 && r_sandbox_enable (0)) {
-	} else {
-	}
-	// TODO: store in core->cmdtimes to speedup ?
-	const char *cmdrep = core->cmdtimes ? core->cmdtimes: "";
-	orep = rep;
-
-	r_cons_break_push (NULL, NULL);
-
-	int ocur_enabled = core->print && core->print->cur_enabled;
-	while (rep-- && *cmd) {
-		if (core->print) {
-			core->print->cur_enabled = false;
-			if (ocur_enabled && core->seltab >= 0) {
-				if (core->seltab == core->curtab) {
-					core->print->cur_enabled = true;
-				}
-			}
-		}
-		if (r_cons_is_breaked ()) {
-		char *cr = strdup (cmdrep);
-		core->break_loop = false;
-		ret = r_core_cmd_subst_i (core, cmd, colon, (rep == orep - 1) ? &tmpseek : NULL);
-
-/* libr/core/cmd.c:3538 */
-static int r_core_cmd_subst_i(RCore *core, char *cmd, char *colon, bool *tmpseek) {
-	RList *tmpenvs = r_list_newf (tmpenvs_free);
-	const char *quotestr = "`";
-	const char *tick = NULL;
-	char *ptr, *ptr2, *str;
-	char *arroba = NULL;
-	char *grep = NULL;
-	RIODesc *tmpdesc = NULL;
-	int pamode = !core->io->va;
-	int i, ret = 0, pipefd;
-	bool usemyblock = false;
-	int scr_html = -1;
-	int scr_color = -1;
-	bool eos = false;
-	bool haveQuote = false;
-	bool oldfixedarch = core->fixedarch;
-	bool oldfixedbits = core->fixedbits;
-	bool cmd_tmpseek = false;
-	ut64 tmpbsz = core->blocksize;
-	int cmd_ignbithints = -1;
-
-	if (!cmd) {
-		r_list_free (tmpenvs);
-		return 0;
-	}
-	cmd = r_str_trim_head_tail (cmd);
-    ...
-	
-fuji:
-	rc = cmd? r_cmd_call (core->rcmd, r_str_trim_head (cmd)): false;
-
-
-/* libr/core/cmd_api.c:244 */
-R_API int r_cmd_call(RCmd *cmd, const char *input) {
-	struct r_cmd_item_t *c;
-	int ret = -1;
-	RListIter *iter;
-	RCorePlugin *cp;
-	r_return_val_if_fail (cmd && input, -1);
-	if (!*input) {
-	} else {
-		char *nstr = NULL;
-		const char *ji = r_cmd_alias_get (cmd, input, 1);
-		if (ji) {
-		}
-		r_list_foreach (cmd->plist, iter, cp) {
-		}
-		if (!*input) {
-		}
-		c = cmd->cmds[((ut8)input[0]) & 0xff];
-		if (c && c->callback) {
-			const char *inp = (*input)? input + 1: ""; 
-			// input = '!sleep 999'
-			// *(input+1) = sleep 999
-			ret = c->callback (cmd->data, inp);
-
-/*
-	libr/core/cmd_api.c:199
-	R_API int r_cmd_add(RCmd *c, const char *cmd, const char *desc, r_cmd_callback(cb)) {
-		int idx = (ut8)cmd[0];
-		RCmdItem *item = c->cmds[idx];
-		if (!item) {
-			item = R_NEW0 (RCmdItem);
-			c->cmds[idx] = item;
-		}
-		strncpy (item->cmd, cmd, sizeof (item->cmd)-1);
-		strncpy (item->desc, desc, sizeof (item->desc)-1);
-		item->callback = cb;
-*/
-
-/* libr/core/cmd.c:4734 */
-R_API void r_core_cmd_init(RCore *core) {
-	struct {
-		const char *cmd;
-		const char *description;
-		int (*callback)(void *data, const char *input)
-		int (*cb)(void *data, const char *input)
-	} cmds[] = {
-		{"!",        "run system command", cmd_system},
-    ...
-    	for (i = 0; i < R_ARRAY_SIZE (cmds); i++) {
-		r_cmd_add (core->rcmd, cmds[i].cmd, cmds[i].description, cmds[i].cb);
-	}
+   // r_core_cmd_subst_i()를 호출
+   // r_core_cmd_call()을 호출
+   // cmd->cmds['!']를 참조하여 cmd_system()를 호출
 
 /* libr/core/cmd.c:2086 */
 static int cmd_system(void *data, const char *input) {
@@ -3579,9 +2810,6 @@ R_API int r_sandbox_system (const char *x, int n) {
 #if LIBC_HAVE_SYSTEM
 	if (n) {
 		return system (x);
-
-
-// x = 'sleep 999', x는 실행할 명령어
 ```
 </details>
 
